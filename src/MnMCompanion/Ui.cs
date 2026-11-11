@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using MnMCompanion.Loot;
@@ -292,5 +293,67 @@ public static class ClipboardText
     {
         try { Clipboard.SetText(text); return true; }
         catch (System.Runtime.InteropServices.COMException) { return false; }
+    }
+}
+
+/// <summary>
+/// Small line drawings for title-bar and tab buttons, drawn as vectors in a 0..16 box so they never depend on a symbol font
+/// (which Wine and Proton often lack) and stay sharp at every window scale.
+/// </summary>
+internal static class Icons
+{
+    private static readonly Geometry PopOutData = Parse("M 7.5,3.5 L 3.5,3.5 L 3.5,12.5 L 12.5,12.5 L 12.5,8.5 M 9.5,2.5 L 13.5,2.5 L 13.5,6.5 M 7.5,8.5 L 13.5,2.5");
+    private static readonly Geometry CompactData = Parse("M 3.5,2.5 L 8,6.5 L 12.5,2.5 M 3.5,13.5 L 8,9.5 L 12.5,13.5");
+    private static readonly Geometry ExpandData = Parse("M 3.5,6 L 8,2 L 12.5,6 M 3.5,10 L 8,14 L 12.5,10");
+    private static readonly Geometry TextSizeData = Parse("M 1.5,13.3 L 4.85,2.7 L 8.2,13.3 M 2.6,9.8 L 7.1,9.8 M 14.5,10.7 A 2.2,2.6 0 0 0 10.1,10.7 A 2.2,2.6 0 0 0 14.5,10.7 M 14.5,8.1 L 14.5,13.3");
+    private static readonly Geometry PinData = Parse("M 5,2.5 L 11,2.5 M 6,2.5 L 6,6.5 L 3.8,9.2 L 12.2,9.2 L 10,6.5 L 10,2.5 M 8,9.2 L 8,14");
+    private static readonly Geometry CloseData = Parse("M 3.5,3.5 L 12.5,12.5 M 12.5,3.5 L 3.5,12.5");
+
+    /// <summary>Open box with an outward arrow to the top right (take a tab out into its own window).</summary>
+    public static UIElement PopOut() => Make(PopOutData);
+
+    /// <summary>Chevrons pointing inward toward the middle (compact view).</summary>
+    public static UIElement Compact() => Make(CompactData);
+
+    /// <summary>Chevrons pointing outward to top and bottom (full view).</summary>
+    public static UIElement Expand() => Make(ExpandData);
+
+    /// <summary>Dual-height "Aa" strokes (text size).</summary>
+    public static UIElement TextSize() => Make(TextSizeData);
+
+    /// <summary>Thumbtack silhouette (keep on top).</summary>
+    public static UIElement Pin() => Make(PinData);
+
+    /// <summary>Diagonal cross strokes (close / return to main window).</summary>
+    public static UIElement Close() => Make(CloseData);
+
+    private static Geometry Parse(string path)
+    {
+        var g = Geometry.Parse(path);
+        if (g.CanFreeze) g.Freeze();
+        return g;
+    }
+
+    private static UIElement Make(Geometry data)
+    {
+        var path = new System.Windows.Shapes.Path
+        {
+            Data = data,
+            Stretch = Stretch.Uniform,
+            Width = 12,
+            Height = 12,
+            StrokeThickness = 1.4,
+            SnapsToDevicePixels = true,
+            StrokeLineJoin = PenLineJoin.Round,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+        };
+        path.SetBinding(System.Windows.Shapes.Shape.StrokeProperty, new Binding(nameof(Control.Foreground))
+        {
+            RelativeSource = new RelativeSource(RelativeSourceMode.FindAncestor, typeof(Control), 1),
+            FallbackValue = Palette.Text,
+            TargetNullValue = Palette.Text,
+        });
+        return path;
     }
 }

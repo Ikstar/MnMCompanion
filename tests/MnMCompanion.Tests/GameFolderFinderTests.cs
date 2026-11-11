@@ -159,4 +159,39 @@ public class GameFolderFinderTests
         Assert.Contains("a window could be shown and drawn", report);
         Assert.DoesNotContain("Aldric", report);
     }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", "   ")]
+    public void The_report_omits_display_and_windows_lines_when_not_provided(string? display, string? windows)
+    {
+        var facts = new DiagnoseFacts("0.3.2", "Microsoft Windows 10.0.19045", ".NET 10.0.0", false, "none", [], null,
+            @"C:\users\alice\AppData\LocalLow\Niche Worlds Cult\Monsters and Memories",
+            @"C:\users\alice\AppData\LocalLow\Niche Worlds Cult\Monsters and Memories", 1, null, 0, [],
+            "ok", "installed", @"C:\users\alice\AppData\Local\MnMCompanion",
+            Display: display, Windows: windows);
+
+        var report = GameFolderFinder.Report(facts);
+
+        Assert.DoesNotContain("display:", report);
+        Assert.DoesNotContain("windows:", report);
+    }
+
+    [Fact]
+    public void The_report_emits_display_and_windows_lines_with_user_paths_masked()
+    {
+        var facts = new DiagnoseFacts("0.3.2", "Microsoft Windows 10.0.19045", ".NET 10.0.0", true, "WINEPREFIX set", [], @"Z:\",
+            @"/home/alice/.local/share/Steam/steamapps/compatdata/123/pfx",
+            @"C:\users\steamuser\AppData\LocalLow\Niche Worlds Cult\Monsters and Memories", 0, null, 0, [],
+            "a window could be shown and drawn", "installed", @"C:\users\steamuser\AppData\Local\MnMCompanion",
+            Display: "dpi 96 (1.00x); work 0,0 3840x2160; WAYLAND_DISPLAY=/home/alice/wayland-0",
+            Windows: @"Panel 150%, History 175%, Timers 100%; tabs Loot(open,compact,150%); note /home/alice/.config/settings.json.corrupt; backup C:\users\bob\AppData\Local\MnMCompanion\settings.json.corrupt");
+
+        var report = GameFolderFinder.Report(facts);
+
+        Assert.Contains("display: dpi 96 (1.00x); work 0,0 3840x2160; WAYLAND_DISPLAY=/home/<user>/wayland-0", report);
+        Assert.Contains(@"windows: Panel 150%, History 175%, Timers 100%; tabs Loot(open,compact,150%); note /home/<user>/.config/settings.json.corrupt; backup C:\users\<user>\AppData\Local\MnMCompanion\settings.json.corrupt", report);
+        Assert.DoesNotContain("alice", report);
+        Assert.DoesNotContain("bob", report);
+    }
 }

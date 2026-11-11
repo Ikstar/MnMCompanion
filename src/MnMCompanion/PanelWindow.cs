@@ -28,9 +28,18 @@ internal sealed class PanelWindow : Window
     private readonly Dictionary<string, IMiniPage> _pages = [];
     private readonly Dictionary<string, RadioButton> _nav = [];
     private readonly ContentControl _host = new();
-    private readonly TextBlock _status;
+    private readonly TextBlock _status = new() { FontSize = 10, Foreground = Palette.Muted, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
     private string _page = "Loot";
-    private static readonly string[] PageNames = ["Map", "Loot", "Vendor", "Trades", "Items", "Harvest", "Recipes", "Market"];
+    private static IReadOnlyList<string> PageNames => TabDockPolicy.PageNames;
+    private const string LastTabTip = "At least one tab stays in the main Companion window";
+
+    // The tabs taken out into their own windows, by page; the buttons of the pages still here, and the button that takes the one on show out
+    private readonly Dictionary<string, TabWindow> _tabWindows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly UniformGrid _pageBar = new();
+    private readonly Button _popOutButton;
+    private readonly WindowScale _windowScale;
+    private bool _shuttingDown;
+    private bool _resetting;
     private readonly TextBlock _who;
     private readonly Button _pin;
     private readonly Button _about;
@@ -54,7 +63,10 @@ internal sealed class PanelWindow : Window
     /// <summary>A row of the Vendor, Trades, Items or Harvest page was clicked: the History window page ("Vendors", "Trades", "Changes", "Harvest") that shows it in full.</summary>
     public event Action<string>? HistoryPageRequested;
 
-    /// <param name="updates">The update checker; null (a picture-taking run) means no update button or banner.</param>
+    /// <summary>ⓘ → Reset window positions &amp; scaling: the other windows (History, Timers) go back to normal size on the main monitor too.</summary>
+    public event Action? ResetLayoutRequested;
+
+    /// <param name="updates">The update checker; null (a picture-taking run) means no update items in the ⓘ menu and no banner.</param>
     /// <param name="recipesFile">A recipe list to read instead of the kept copy and the wiki (a picture-taking run); null for the real thing.</param>
     /// <param name="marketFile">An auction feed to read instead of the kept book and mnm-db.com (a picture-taking run); null for the real thing.</param>
     public PanelWindow(LootStore store, Settings settings, UpdateController? updates = null, HistoryData? history = null, string? recipesFile = null, string? marketFile = null)
@@ -77,19 +89,28 @@ internal sealed class PanelWindow : Window
         BorderBrush = new SolidColorBrush(Color.FromArgb(0x80, 0x90, 0xA0, 0xB0));
         BorderThickness = new Thickness(1);
         Topmost = settings.OnTop;
-        MinWidth = 300;
-        MinHeight = 240;
         UseLayoutRounding = true;
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
-        var b = settings.Panel ?? new Bounds(double.NaN, double.NaN, 480, 600);
+        // A first run opens at the normal size for the saved text size; the least size, and keeping it on its monitor, come from the scaling below
+        var factor = UiScale.Factor(settings.PanelScale);
+        var b = settings.Panel ?? new Bounds(double.NaN, double.NaN, 480 * factor, 600 * factor);
         Width = b.Width;
         Height = b.Height;
         var work = SystemParameters.WorkArea;
         Left = double.IsNaN(b.Left) ? work.Right - Width - 24 : b.Left;
         Top = double.IsNaN(b.Top) ? work.Top + 80 : b.Top;
         KeepOnScreen();
+
+        var root = new DockPanel();
+        _windowScale = WindowScale.Attach(this, root, baseMinWidth: 380, baseMinHeight: 360, initialPercent: _settings.PanelScale, onChanged: p =>
+        {
+            _settings.PanelScale = p;
+            if (!_tabWindows.ContainsKey("Map")) _map.SetHostScale(_windowScale.Factor);   // the map zooms with the window that holds it
+            ShowToolLabels();
+            _settings.SaveSoon();
+        });
 
         var caption = new TextBlock { Text = "Companion", Foreground = new SolidColorBrush(Color.FromRgb(0xE6, 0xEA, 0xEE)), FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 6, 0) };
         _who = new TextBlock
@@ -103,9 +124,14 @@ internal sealed class PanelWindow : Window
         _about = TitleButton("", "About Companion, and updates", OpenAboutMenu);
         var historyButton = LabelledButton("\uE81C", "History", "History: every day and every page, for this character or for everyone", OpenHistory);
         var timersButton = LabelledButton("\uE916", "Timers", "Timers: your own timers, started by a key, and a timer for every corpse", () => TimersRequested?.Invoke());
+        var scaleButton = _windowScale.MakeTitleButton((Style)Ui.Theme["IconButton"]);
+        scaleButton.Foreground = new SolidColorBrush(Color.FromRgb(0xC8, 0xD4, 0xE0));
+        scaleButton.VerticalAlignment = VerticalAlignment.Center;
+        System.Windows.Automation.AutomationProperties.SetName(scaleButton, "Text size");
         var title = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x10, 0x14, 0x18)), Height = 32, Cursor = Cursors.SizeAll, LastChildFill = false };
         DockPanel.SetDock(close, Dock.Right);
         DockPanel.SetDock(_pin, Dock.Right);
+        DockPanel.SetDock(scaleButton, Dock.Right);
         DockPanel.SetDock(_about, Dock.Right);
         DockPanel.SetDock(historyButton, Dock.Right);
         DockPanel.SetDock(timersButton, Dock.Right);
@@ -113,7 +139,9 @@ internal sealed class PanelWindow : Window
         DockPanel.SetDock(_who, Dock.Left);
         title.Children.Add(close);
         title.Children.Add(_pin);
-        if (updates is not null) title.Children.Add(_about);
+        title.Children.Add(scaleButton);
+        // ⓘ is there in every run: the recovery items (tabs back, reset sizes) are in it, the update items only when there is an update checker
+        title.Children.Add(_about);
         title.Children.Add(historyButton);
         title.Children.Add(timersButton);
         title.Children.Add(caption);
@@ -124,19 +152,31 @@ internal sealed class PanelWindow : Window
         _session = new SessionScope(store);
         _panel = new LootPanel(store, _session, settings.View, view => { settings.View = view; settings.Save(); },
             (day, member, session) => BreakdownRequested?.Invoke(day, member, session));
-        _status = _panel.StatusLine;
         void OpenInHistory(string key) => HistoryPageRequested?.Invoke(key);
-        _pages["Map"] = _map = new MapPanel(store, _session, settings, _status);
+        _pages["Map"] = _map = new MapPanel(store, _session, settings);
         _pages["Loot"] = _panel;
-        _pages["Vendor"] = new VendorMini(store, history, _session, _status, OpenInHistory);
-        _pages["Trades"] = new TradesMini(store, history, _session, _status, OpenInHistory);
-        _pages["Items"] = new ItemsMini(store, history, _session, _status, OpenInHistory);
-        _pages["Harvest"] = new HarvestMini(store, history, _session, _status, OpenInHistory);
-        _pages["Recipes"] = _recipes = new RecipesPanel(settings, _status, recipesFile);
-        _pages["Market"] = _market = new MarketPanel(store, _session, settings, _status, marketFile);
-        _session.Said += text => Active.Say(text);
+        _pages["Vendor"] = new VendorMini(store, history, _session, OpenInHistory);
+        _pages["Trades"] = new TradesMini(store, history, _session, OpenInHistory);
+        _pages["Items"] = new ItemsMini(store, history, _session, OpenInHistory);
+        _pages["Harvest"] = new HarvestMini(store, history, _session, OpenInHistory);
+        _pages["Recipes"] = _recipes = new RecipesPanel(settings, recipesFile);
+        _pages["Market"] = _market = new MarketPanel(store, _session, settings, marketFile);
+        // Every page here says its status in this window's bottom bar; a page taken out says it in its own window's
+        foreach (var p in _pages.Values) p.BindStatus(SetPanelStatus);
+        _map.SetHostScale(_windowScale.Factor);
+        _session.Said += text =>
+        {
+            foreach (var p in VisiblePages()) p.Say(text);
+        };
+        _session.Changed += OnSessionChanged;
+        _popOutButton = new Button
+        {
+            Content = Icons.PopOut(), Style = (Style)Ui.Theme["IconButton"], Width = 28, Height = 28, Margin = new Thickness(6, 0, 0, 0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xC8, 0xD4, 0xE0)), VerticalAlignment = VerticalAlignment.Center, Focusable = false,
+        };
+        ToolTipService.SetShowOnDisabled(_popOutButton, true);
+        _popOutButton.Click += (_, _) => DetachTab(_page);
         var bottom = BuildBottomBar();
-        var root = new DockPanel();
         DockPanel.SetDock(title, Dock.Top);
         DockPanel.SetDock(_banner, Dock.Top);
         DockPanel.SetDock(bottom, Dock.Bottom);
@@ -144,8 +184,9 @@ internal sealed class PanelWindow : Window
         root.Children.Add(_banner);
         root.Children.Add(bottom);
         root.Children.Add(_host);
-        Content = root;
-        ShowPage(PageNames.Contains(settings.MiniPage) ? settings.MiniPage : "Loot", save: false);
+        _page = TabDockPolicy.IsKnownPage(settings.MiniPage, out var startPage) ? startPage : "Loot";
+        RebuildTabBar();
+        ShowPage(_page, save: false);
         ShowPin();
         ShowSelection();
         if (updates is not null)
@@ -156,25 +197,32 @@ internal sealed class PanelWindow : Window
 
         LocationChanged += (_, _) => Remember();
         SizeChanged += (_, _) => Remember();
+        // The tabs out in their own windows are closed (still marked open, to come back next time), the map's web view let go of and the settings written
+        Closing += (_, _) => PrepareForExit();
         Closed += (_, _) =>
         {
-            _timer?.Stop();
-            _map.Dispose();
+            PrepareForExit();
             if (_updates is not null) _updates.Changed -= ShowBanner;
         };
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _timer.Tick += async (_, _) =>
         {
+            if (_shuttingDown) return;
             await FollowAsync();
             await RefreshAsync();
-            Active.Tick();
-            if (Active.NeedsHistory && _history is not null) _ = _history.RefreshAsync();
+            if (_shuttingDown) return;
+            // every page on show, here or in its own window, and the saved history at most once, if any of them reads it
+            foreach (var p in VisiblePages()) p.Tick();
+            RefreshHistoryIfNeeded();
         };
         Loaded += async (_, _) =>
         {
             _panel.Refresh();
             await RefreshAsync(force: true);
+            if (_shuttingDown) return;
             Active.Refresh();
+            RestoreDetachedTabs();
+            RefreshHistoryIfNeeded();
             _timer.Start();
         };
     }
@@ -182,6 +230,26 @@ internal sealed class PanelWindow : Window
     public LootPanel Panel => _panel;
 
     private IMiniPage Active => _pages[_page];
+
+    /// <summary>The pages on show: the one in this window, and each one out in its own window.</summary>
+    private IEnumerable<IMiniPage> VisiblePages()
+    {
+        yield return Active;
+        foreach (var w in _tabWindows.Values.ToList()) yield return w.Page;
+    }
+
+    /// <summary>Asks for a pass over the saved history (once) when any page on show reads it.</summary>
+    private void RefreshHistoryIfNeeded()
+    {
+        if (_history is not null && VisiblePages().Any(p => p.NeedsHistory)) _ = _history.RefreshAsync();
+    }
+
+    private void OnSessionChanged()
+    {
+        if (!_shuttingDown) RefreshHistoryIfNeeded();
+    }
+
+    private void SetPanelStatus(string text) => _status.Text = text;
 
     /// <summary>Opens the History window on the day and session on show.</summary>
     private void OpenHistory() => BreakdownRequested?.Invoke(_session.Day, null, _session.ActiveSession());
@@ -197,38 +265,238 @@ internal sealed class PanelWindow : Window
 
     private void ShowPage(string key, bool save = true)
     {
-        if (!_pages.TryGetValue(key, out var page)) return;
-        _page = key;
-        _host.Content = page.Element;
+        if (!TabDockPolicy.IsKnownPage(key, out var name) || !_pages.TryGetValue(name, out var page)) return;
+        // A page out in its own window is shown there: that window comes forward (a page can't be in two windows)
+        if (_tabWindows.TryGetValue(name, out var openTw))
+        {
+            if (openTw.WindowState == WindowState.Minimized) openTw.WindowState = WindowState.Normal;
+            openTw.Activate();
+            if (_nav.TryGetValue(_page, out var current) && current.IsChecked != true) current.IsChecked = true;
+            return;
+        }
+        _page = name;
+        if (!ReferenceEquals(_host.Content, page.Element)) _host.Content = page.Element;
         _status.Text = "";
-        if (_nav.TryGetValue(key, out var rb) && rb.IsChecked != true) rb.IsChecked = true;
-        if (save) { _settings.MiniPage = key; _settings.Save(); }
+        // The buttons are set by hand: one taken out of the bar and put back is no longer grouped with the others
+        foreach (var (navKey, rb) in _nav)
+        {
+            var on = navKey == name;
+            if (rb.IsChecked != on) rb.IsChecked = on;
+        }
+        if (save) { _settings.MiniPage = name; _settings.SaveSoon(); }
+        UpdatePopOutButton();
         page.Refresh();
         if (page.NeedsHistory && _history is not null) _ = _history.RefreshAsync();
     }
 
     /// <summary>
-    /// The bottom of the window: a button for each page (Map, Loot, Vendor, Trades, Items, Harvest, Recipes, Market) with the status line above them. Every page shows
-    /// the same day and session; History is a button in the title bar, New session is in the session menu and the ledger folder in the ⓘ menu.
+    /// The bottom of the window: a button for each page still here (Map, Loot, Vendor, Trades, Items, Harvest, Recipes, Market, less any taken out into
+    /// their own windows) with the status line above them, and at their right the button that takes the page on show out into its own window. Every page
+    /// shows the same day and session; History is a button in the title bar, New session is in the session menu and the ledger folder in the ⓘ menu.
     /// </summary>
     private FrameworkElement BuildBottomBar()
     {
-        var grid = new System.Windows.Controls.Primitives.UniformGrid { Columns = PageNames.Length };
         foreach (var name in PageNames)
         {
             var key = name;
             var rb = new RadioButton { Content = new TextBlock { Text = key }, Style = (Style)Ui.Theme["Segment"], GroupName = "MiniPage", IsChecked = key == _page, Focusable = false };
             rb.Checked += (_, _) => { if (key != _page) ShowPage(key); };
             _nav[key] = rb;
-            grid.Children.Add(rb);
         }
-        var pages = new Border { CornerRadius = new CornerRadius(8), Background = (Brush)Ui.Theme["Subtle"], Padding = new Thickness(2), Child = grid };
+        var pages = new Border { CornerRadius = new CornerRadius(8), Background = (Brush)Ui.Theme["Subtle"], Padding = new Thickness(2), Child = _pageBar };
+        var row = new DockPanel();
+        DockPanel.SetDock(_popOutButton, Dock.Right);
+        row.Children.Add(_popOutButton);
+        row.Children.Add(pages);
 
         _status.Margin = new Thickness(2, 0, 2, 6);
         var stack = new StackPanel();
         stack.Children.Add(_status);
-        stack.Children.Add(pages);
+        stack.Children.Add(row);
         return new Border { Background = (Brush)Ui.Theme["Panel"], BorderBrush = (Brush)Ui.Theme["Stroke"], BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(12, 8, 12, 8), Child = stack };
+    }
+
+    /// <summary>The pages still in this window, in page order.</summary>
+    private List<string> DockedPages() => PageNames.Where(p => !_tabWindows.ContainsKey(p)).ToList();
+
+    /// <summary>
+    /// Lays out the bar with a button for each page still here, in page order; a right click on one offers to open it in its own window
+    /// (not the last one: at least one page stays here).
+    /// </summary>
+    private void RebuildTabBar()
+    {
+        var docked = DockedPages();
+        var canDetach = TabDockPolicy.CanDetach(docked.Count);
+        _pageBar.Children.Clear();
+        _pageBar.Columns = Math.Max(1, docked.Count);
+        foreach (var name in docked)
+        {
+            var key = name;
+            var rb = _nav[key];
+            var open = new MenuItem { Header = $"Open {key} in new window", IsEnabled = canDetach };
+            if (!canDetach)
+            {
+                open.ToolTip = LastTabTip;
+                ToolTipService.SetShowOnDisabled(open, true);
+            }
+            open.Click += (_, _) => DetachTab(key);
+            var menu = new ContextMenu();
+            menu.Items.Add(open);
+            rb.ContextMenu = menu;
+            _pageBar.Children.Add(rb);
+        }
+        UpdatePopOutButton();
+    }
+
+    private void UpdatePopOutButton()
+    {
+        var can = TabDockPolicy.CanDetach(DockedPages().Count);
+        _popOutButton.IsEnabled = can;
+        _popOutButton.ToolTip = can ? $"Pop out {_page} into its own window" : LastTabTip;
+    }
+
+    /// <summary>
+    /// Takes a page out into a window of its own (or brings its window forward if it is out already). The page on show here moves on to the next one
+    /// first; the last page here can't be taken out. <paramref name="compactOverride"/> picks the compact view or the full one, for a page that has both.
+    /// </summary>
+    public bool DetachTab(string name, bool? compactOverride = null)
+    {
+        if (_shuttingDown || !TabDockPolicy.IsKnownPage(name, out var canonical) || !_pages.TryGetValue(canonical, out var page)) return false;
+        if (_tabWindows.TryGetValue(canonical, out var already))
+        {
+            if (already.WindowState == WindowState.Minimized) already.WindowState = WindowState.Normal;
+            already.Activate();
+            return true;
+        }
+        var docked = DockedPages();
+        if (!TabDockPolicy.CanDetach(docked.Count)) return false;
+        if (string.Equals(_page, canonical, StringComparison.OrdinalIgnoreCase))
+        {
+            var next = TabDockPolicy.NextDockedPage(docked, canonical);
+            ShowPage(next);
+            if (_pages.TryGetValue(_page, out var nextPage)) _host.Content = nextPage.Element;
+        }
+        if (ReferenceEquals(_host.Content, page.Element)) _host.Content = null;
+
+        if (!_settings.DetachedTabs.TryGetValue(canonical, out var state) || state is null)
+        {
+            state = new DetachedTabState();
+            _settings.DetachedTabs[canonical] = state;
+        }
+        state.Open = true;
+        if (compactOverride is bool co && TabDockPolicy.SupportsCompact(canonical)) state.Compact = co;
+
+        var anchor = new Rect(Left, Top, ActualWidth > 0 ? ActualWidth : Width, ActualHeight > 0 ? ActualHeight : Height);
+        var tw = new TabWindow(canonical, page, _settings, _session, () => _who.Text, () => _shuttingDown, RedockTab, anchor, _tabWindows.Count);
+        _tabWindows[canonical] = tw;
+        RebuildTabBar();
+        tw.Show();
+        page.Refresh();
+        _settings.SaveSoon();
+        return true;
+    }
+
+    /// <summary>A tab's window was closed by the player: the page comes back here, in its place in the bar, and is put on show.</summary>
+    private void RedockTab(string name)
+    {
+        if (!TabDockPolicy.IsKnownPage(name, out var canonical)) return;
+        _tabWindows.Remove(canonical);
+        if (_shuttingDown || !_pages.TryGetValue(canonical, out var page)) return;
+        page.SetCompact(false);
+        page.BindStatus(SetPanelStatus);
+        if (canonical == "Map") _map.SetHostScale(_windowScale.Factor);
+        RebuildTabBar();
+        ShowPage(canonical);
+    }
+
+    /// <summary>ⓘ → Bring all tabs back: closes every tab's window, which puts its page back here.</summary>
+    public void RedockAll()
+    {
+        if (_shuttingDown) return;
+        foreach (var tw in _tabWindows.Values.ToList()) tw.Close();
+    }
+
+    /// <summary>At start-up, takes out again the tabs that were out in their own windows when the app last closed.</summary>
+    private void RestoreDetachedTabs()
+    {
+        if (_settings.ReadOnly || WindowScale.GetOffScreenSnapshot(this) || _shuttingDown) return;
+        foreach (var p in PageNames)
+            if (_settings.DetachedTabs.TryGetValue(p, out var st) && st is { Open: true }) DetachTab(p);
+    }
+
+    /// <summary>
+    /// ⓘ → Reset window positions &amp; scaling: every window back to normal text size, this one to its first place on the main monitor, each tab's window
+    /// beside it (their saved places and compact heights forgotten), and the History and Timers windows told to do the same.
+    /// </summary>
+    public void ResetWindowsAndScaling()
+    {
+        _resetting = true;
+        try
+        {
+            _settings.PanelScale = UiScale.Default;
+            _settings.BreakdownScale = UiScale.Default;
+            _settings.TimersScale = UiScale.Default;
+            _settings.Panel = null;
+            _settings.Breakdown = null;
+            _settings.Timers = null;
+            foreach (var st in _settings.DetachedTabs.Values)
+            {
+                if (st is null) continue;
+                st.Scale = UiScale.Default;
+                st.Bounds = null;
+                st.CompactHeight = null;
+            }
+
+            if (WindowState != WindowState.Normal) WindowState = WindowState.Normal;
+            _windowScale.SetScale(UiScale.Default, resizeOuter: false);
+            var wa = SystemParameters.WorkArea;
+            var work = new WorkArea(wa.Left, wa.Top, wa.Width, wa.Height);
+            var box = UiScale.ClampToWorkArea(work.Right - 480 - 24, work.Top + 80, 480, 600, 380, 360, UiScale.Default, work);
+            MaxWidth = work.Width;
+            MaxHeight = work.Height;
+            MinWidth = box.MinWidth;
+            MinHeight = box.MinHeight;
+            Width = box.Width;
+            Height = box.Height;
+            Left = box.Left;
+            Top = box.Top;
+            _settings.Panel = null;
+            _settings.PanelScale = UiScale.Default;
+            if (!_tabWindows.ContainsKey("Map")) _map.SetHostScale(_windowScale.Factor);
+            ShowToolLabels();
+
+            var idx = 0;
+            var anchor = new Rect(Left, Top, Width, Height);
+            foreach (var tw in _tabWindows.Values.ToList()) tw.ResetScaleAndBounds(anchor, idx++);
+
+            ResetLayoutRequested?.Invoke();
+            _settings.SaveSoon();
+        }
+        finally
+        {
+            if (IsLoaded && IsVisible) Dispatcher.BeginInvoke(new Action(() => _resetting = false), DispatcherPriority.Loaded);
+            else _resetting = false;
+        }
+    }
+
+    /// <summary>
+    /// The app is closing (the window, an update restarting it, or the app itself): the poll stops, each tab's window closes with its page (left marked
+    /// open, so it comes back out next time), the map's web view is let go of, and any waiting settings are written. Safe to call more than once.
+    /// </summary>
+    internal void PrepareForExit()
+    {
+        if (_shuttingDown) return;
+        _shuttingDown = true;
+        _timer.Stop();
+        foreach (var tw in _tabWindows.Values.ToList())
+        {
+            try { tw.Close(); }
+            catch (InvalidOperationException) { }   // already closing
+        }
+        _tabWindows.Clear();
+        _host.Content = null;
+        _map.Dispose();
+        _settings.FlushSave();
     }
 
     /// <summary>A button of the title bar: a picture, big enough to see, with the theme's hover highlight.</summary>
@@ -265,7 +533,8 @@ internal sealed class PanelWindow : Window
 
     private void ShowToolLabels()
     {
-        var visibility = ActualWidth >= 420 ? Visibility.Visible : Visibility.Collapsed;
+        // by the window's width at its text size, so the names fold away at the same point at every scale
+        var visibility = (ActualWidth / _windowScale.Factor) >= 430 ? Visibility.Visible : Visibility.Collapsed;
         foreach (var label in _toolLabels) label.Visibility = visibility;
     }
 
@@ -279,21 +548,26 @@ internal sealed class PanelWindow : Window
 
     private void ShowPin() => _pin.Foreground = Topmost ? new SolidColorBrush(Palette.AccentColor) : new SolidColorBrush(Color.FromRgb(0x70, 0x7A, 0x88));
 
-    private void ShowSelection() => _who.Text = _store.Selected is { } s ? $"{s.Character} · {s.ServerName}" : "No ledger";
+    private void ShowSelection()
+    {
+        _who.Text = _store.Selected is { } s ? $"{s.Character} · {s.ServerName}" : "No ledger";
+        foreach (var tw in _tabWindows.Values) tw.UpdateHeader();
+    }
 
     /// <summary>Reads the ledger on a worker thread and redraws if it changed (or <paramref name="force"/>).</summary>
     public async Task RefreshAsync(bool force = false)
     {
-        if (_busy) return;
+        if (_busy || _shuttingDown) return;
         _busy = true;
         try
         {
             bool changed = await Task.Run(_store.Refresh);
             changed |= StartSessionOnJoin();
-            if (changed || force)
+            if ((changed || force) && !_shuttingDown)
             {
                 _panel.Refresh();
-                if (_page != "Loot") Active.Refresh();
+                foreach (var page in VisiblePages())
+                    if (!ReferenceEquals(page, _panel)) page.Refresh();
             }
         }
         catch (Exception ex)
@@ -324,24 +598,27 @@ internal sealed class PanelWindow : Window
 
     private void OpenAboutMenu()
     {
-        if (_updates is null) return;
         var menu = new ContextMenu { PlacementTarget = _about, Placement = PlacementMode.Bottom };
-        menu.Items.Add(new MenuItem { Header = $"Companion {Update.AppVersion.Show(_updates.Current)}", IsEnabled = false });
+        menu.Items.Add(new MenuItem { Header = $"Companion {Update.AppVersion.Show(_updates?.Current ?? Update.AppVersion.Current())}", IsEnabled = false });
         menu.Items.Add(new Separator());
-        var check = new MenuItem { Header = "Check for updates now", ToolTip = "Asks GitHub whether a newer version has been released. Nothing is installed unless you say so." };
-        check.Click += async (_, _) => await _updates.CheckAsync(manual: true);
-        menu.Items.Add(check);
-        var auto = new MenuItem { Header = "Check for updates automatically", IsCheckable = true, IsChecked = _settings.CheckForUpdates, ToolTip = "When the app starts and every few hours. Untick it and the app never asks GitHub by itself." };
-        var install = new MenuItem
+        // the update items need the update checker, which a picture-taking run doesn't have
+        if (_updates is { } updates)
         {
-            Header = "Install updates automatically", IsCheckable = true, IsChecked = _settings.InstallUpdates, IsEnabled = _settings.CheckForUpdates,
-            ToolTip = "A newer version is downloaded, checked against the checksum published with it, and installed; Companion restarts into it once none of your timers is running. Untick it and a newer version is only offered, and you press Update now.",
-        };
-        auto.Click += (_, _) => { _settings.CheckForUpdates = auto.IsChecked; _settings.Save(); install.IsEnabled = auto.IsChecked; };
-        install.Click += (_, _) => { _settings.InstallUpdates = install.IsChecked; _settings.Save(); };
-        menu.Items.Add(auto);
-        menu.Items.Add(install);
-        menu.Items.Add(new Separator());
+            var check = new MenuItem { Header = "Check for updates now", ToolTip = "Asks GitHub whether a newer version has been released. Nothing is installed unless you say so." };
+            check.Click += async (_, _) => await updates.CheckAsync(manual: true);
+            menu.Items.Add(check);
+            var auto = new MenuItem { Header = "Check for updates automatically", IsCheckable = true, IsChecked = _settings.CheckForUpdates, ToolTip = "When the app starts and every few hours. Untick it and the app never asks GitHub by itself." };
+            var install = new MenuItem
+            {
+                Header = "Install updates automatically", IsCheckable = true, IsChecked = _settings.InstallUpdates, IsEnabled = _settings.CheckForUpdates,
+                ToolTip = "A newer version is downloaded, checked against the checksum published with it, and installed; Companion restarts into it once none of your timers is running. Untick it and a newer version is only offered, and you press Update now.",
+            };
+            auto.Click += (_, _) => { _settings.CheckForUpdates = auto.IsChecked; _settings.Save(); install.IsEnabled = auto.IsChecked; };
+            install.Click += (_, _) => { _settings.InstallUpdates = install.IsChecked; _settings.Save(); };
+            menu.Items.Add(auto);
+            menu.Items.Add(install);
+            menu.Items.Add(new Separator());
+        }
         var party = new MenuItem
         {
             Header = "Start a new session when a player joins the group", IsCheckable = true, IsChecked = _settings.NewSessionOnJoin,
@@ -395,8 +672,27 @@ internal sealed class PanelWindow : Window
         notes.Click += (_, _) => WhatsNewRequested?.Invoke();
         menu.Items.Add(notes);
         var page = new MenuItem { Header = "Project page" };
-        page.Click += (_, _) => _updates.OpenProjectPage();
+        page.Click += (_, _) =>
+        {
+            if (_updates is { } u) u.OpenProjectPage();
+            else Dialogs.OpenPage(Update.UpdateService.ProjectUrl);
+        };
         menu.Items.Add(page);
+        menu.Items.Add(new Separator());
+        var back = new MenuItem
+        {
+            Header = "Bring all tabs back", IsEnabled = _tabWindows.Count > 0,
+            ToolTip = "Closes the windows of the tabs taken out of this one, and puts the tabs back here.",
+        };
+        back.Click += (_, _) => RedockAll();
+        menu.Items.Add(back);
+        var reset = new MenuItem
+        {
+            Header = "Reset window positions & scaling",
+            ToolTip = "Puts every Companion window back on the main monitor at normal text size (100%), and forgets where the tabs' own windows were.",
+        };
+        reset.Click += (_, _) => ResetWindowsAndScaling();
+        menu.Items.Add(reset);
         menu.IsOpen = true;
     }
 
@@ -501,19 +797,18 @@ internal sealed class PanelWindow : Window
         {
             ShowSelection();
             _panel.Refresh();
+            foreach (var page in VisiblePages())
+                if (!ReferenceEquals(page, _panel)) page.Refresh();
         }
+        RefreshHistoryIfNeeded();
     }
 
     private void Remember()
     {
-        if (WindowState != WindowState.Normal) return;
+        if (!IsLoaded || _resetting || _shuttingDown || WindowState != WindowState.Normal || WindowScale.GetOffScreenSnapshot(this)) return;
         _settings.Panel = new Bounds(Left, Top, Width, Height);
-        _saveSoon ??= new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => { _saveSoon!.Stop(); _settings.Save(); }, Dispatcher);
-        _saveSoon.Stop();
-        _saveSoon.Start();
+        _settings.SaveSoon();
     }
-
-    private DispatcherTimer? _saveSoon;
 
     /// <summary>Saved on another monitor layout: pull it back onto the desktop.</summary>
     private void KeepOnScreen()

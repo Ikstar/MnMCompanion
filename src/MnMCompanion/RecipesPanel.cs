@@ -29,7 +29,7 @@ internal sealed class RecipesPanel : Border, IMiniPage
     private const int FirstBatch = 40, NextBatch = 40;
 
     private readonly Settings _settings;
-    private readonly TextBlock _status;
+    private Action<string> _say = _ => { };
     private readonly string? _file;
 
     private readonly TextBlock _sub = new() { FontSize = 11, Foreground = Palette.Muted, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
@@ -65,10 +65,9 @@ internal sealed class RecipesPanel : Border, IMiniPage
     private double? _restoreOffset;
 
     /// <param name="file">A recipe document to read instead of the kept copy and the wiki (for a picture or a test); null for the real thing.</param>
-    public RecipesPanel(Settings settings, TextBlock status, string? file = null)
+    public RecipesPanel(Settings settings, string? file = null)
     {
         _settings = settings;
-        _status = status;
         _file = file;
         _skill = string.IsNullOrWhiteSpace(settings.RecipeSkill) ? null : settings.RecipeSkill;
         Background = new SolidColorBrush(Color.FromRgb(0x0F, 0x11, 0x15));
@@ -137,7 +136,13 @@ internal sealed class RecipesPanel : Border, IMiniPage
 
     public bool NeedsHistory => false;
 
-    public void Say(string text) => _status.Text = text;
+    public bool SupportsCompact => false;
+
+    public void SetCompact(bool compact) { }
+
+    public void BindStatus(Action<string> say) { _say = say ?? (_ => { }); }
+
+    public void Say(string text) => _say(text);
 
     /// <summary>Called when the page is shown and whenever the ledger changes (nothing here depends on it): it redraws only if something it shows has changed, so the list stays where the player scrolled it.</summary>
     public void Refresh()
@@ -224,7 +229,7 @@ internal sealed class RecipesPanel : Border, IMiniPage
         var plan = RecipeRefresh.Decide(DateTime.UtcNow, _book is not null, _meta, _listTimeUtc, manual);
         if (plan.Step != RefreshStep.Ask)
         {
-            if (manual) _status.Text = plan.Why;
+            if (manual) _say(plan.Why);
             return;
         }
         _fetching = true;
@@ -242,7 +247,7 @@ internal sealed class RecipesPanel : Border, IMiniPage
             {
                 _meta.CheckedUtc = now;
                 _meta.NotBeforeUtc = null;
-                if (manual) _status.Text = "The wiki's list hasn't changed.";
+                if (manual) _say("The wiki's list hasn't changed.");
             }
             else if (result.Ok && RecipeBook.TryParse(result.Json) is { } book)
             {
@@ -253,7 +258,7 @@ internal sealed class RecipesPanel : Border, IMiniPage
                 _meta.CheckedUtc = now;
                 _meta.NotBeforeUtc = null;
                 ForgetUnknownSkill();
-                _status.Text = $"Loaded {book.Recipes.Count:N0} recipes from the wiki.";
+                _say($"Loaded {book.Recipes.Count:N0} recipes from the wiki.");
             }
             else
             {
@@ -677,7 +682,7 @@ internal sealed class RecipesPanel : Border, IMiniPage
         copy.Click += (_, e) =>
         {
             e.Handled = true;
-            _status.Text = ClipboardText.Copy(r.Text()) ? $"Copied {r.Result} to the clipboard." : "Couldn't use the clipboard just now.";
+            _say(ClipboardText.Copy(r.Text()) ? $"Copied {r.Result} to the clipboard." : "Couldn't use the clipboard just now.");
         };
         box.Children.Add(copy);
     }

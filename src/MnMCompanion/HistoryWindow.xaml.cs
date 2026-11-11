@@ -23,6 +23,8 @@ public sealed record RailItem(string Key, string Title, string Sub);
 /// </summary>
 public partial class HistoryWindow : Window
 {
+    private const double BaseMinWidth = 960, BaseMinHeight = 600, DefaultWidth = 1560, DefaultHeight = 900;
+
     private static readonly (string Key, string Title)[] Pages =
     [
         ("Loot", "Loot"), ("Trades", "Trades"), ("Vendors", "Vendors"), ("Changes", "Drops / Pickups / Destroys"), ("Harvest", "Harvest"),
@@ -32,19 +34,21 @@ public partial class HistoryWindow : Window
     private readonly HistoryFocus _focus;
     private readonly Settings _settings;
     private readonly HistoryData _history;
+    private readonly WindowScale _windowScale;
+    private readonly TextBlock _scaleLabel = new() { Margin = new Thickness(7, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     private readonly HistoryView _view = new();
     private readonly Dictionary<string, UIElement> _pages = [];
     private readonly DispatcherTimer _timer;
     private readonly List<RadioButton> _presets = [];
-    private readonly Button _day = new() { Style = (Style)Ui.Theme["TextButton"], Padding = new Thickness(10, 5, 10, 5), Margin = new Thickness(10, 0, 0, 0), ToolTip = "Look at one particular day" };
-    private DispatcherTimer? _saveSoon;
+    private readonly Button _day = new() { Style = (Style)Ui.Theme["TextButton"], Padding = new Thickness(10, 5, 10, 5), Margin = new Thickness(0, 3, 10, 3), VerticalAlignment = VerticalAlignment.Center, ToolTip = "Look at one particular day" };
     private DispatcherTimer? _typing;
     private TextBox? _filter;
-    private readonly TextBlock _filterHint = new() { Foreground = Palette.Muted, FontSize = 11.5, Margin = new Thickness(9, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
+    private readonly TextBlock _filterHint = new() { Foreground = Palette.Muted, FontSize = 11.5, Margin = new Thickness(9, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, IsHitTestVisible = false };
     private string _key = "Loot";
     private int _preset;                 // the quick period chosen, or -1 for a particular day
     private DateOnly _today = DateOnly.FromDateTime(DateTime.Now);
     private bool _updating;
+    private bool _resetting;
     private bool _pageRequested;   // the small window asked for a page (a name, a row): don't send the reader back to the page they last left this on
     private HistoryCounts? _counts;
     private int _trades;   // trades, not rows: the ledger writes two rows for one
@@ -58,12 +62,42 @@ public partial class HistoryWindow : Window
         _settings = settings;
         _focus = new HistoryFocus(new LootStore(store.StateRoot, store.LedgerRoot), StartScope(store, settings));
         _history = history;
-        if (settings.Breakdown is { } b && b.Width >= MinWidth && b.Height >= MinHeight)
+        if (settings.Breakdown is { } b && b.Width > 0 && b.Height > 0)
         {
-            WindowStartupLocation = WindowStartupLocation.Manual;
-            (Left, Top, Width, Height) = (b.Left, b.Top, b.Width, b.Height);
-            KeepOnScreen();
+            Width = b.Width;
+            Height = b.Height;
+            if (double.IsFinite(b.Left) && double.IsFinite(b.Top))
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = b.Left;
+                Top = b.Top;
+            }
         }
+        else if (!WindowScale.GetOffScreenSnapshot(this))
+        {
+            var factor = UiScale.Factor(settings.BreakdownScale);
+            Width = DefaultWidth * factor;
+            Height = DefaultHeight * factor;
+        }
+
+        _windowScale = WindowScale.Attach(this, RootGrid, baseMinWidth: BaseMinWidth, baseMinHeight: BaseMinHeight,
+            initialPercent: _settings.BreakdownScale,
+            onChanged: p =>
+            {
+                _settings.BreakdownScale = p;
+                UpdateScaleButton();
+                _settings.SaveSoon();
+            });
+        var scaleIcon = (FrameworkElement)Icons.TextSize();
+        scaleIcon.VerticalAlignment = VerticalAlignment.Center;
+        var scaleContent = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        scaleContent.Children.Add(scaleIcon);
+        scaleContent.Children.Add(_scaleLabel);
+        ScaleButton.Content = scaleContent;
+        ScaleButton.ToolTip = "Change this window's text and control size (Ctrl + / Ctrl -)";
+        ScaleButton.Click += (_, _) => _windowScale.OpenMenu(ScaleButton);
+        UpdateScaleButton();
+
         BuildPeriodBar();
         SourceInitialized += (_, _) => DarkTitleBar();
         LocationChanged += (_, _) => Remember();
@@ -199,28 +233,14 @@ public partial class HistoryWindow : Window
 
     private void BuildPeriodBar()
     {
-        var bar = new DockPanel();
+        var bar = new WrapPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
 
-        var box = new Grid { Width = 300, VerticalAlignment = VerticalAlignment.Center };
-        _filter = new TextBox { Style = (Style)Ui.Theme["Field"], ToolTip = "Show only the rows that have these words in them: every word has to be there, in any order and any case, and part of a word is enough" };
-        var hint = _filterHint;
-        _filter.TextChanged += (_, _) =>
+        var seg = new Border
         {
-            hint.Visibility = _filter.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            // Wait for a pause in the typing, so each letter doesn't redraw the page
-            _typing ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-            _typing.Stop();
-            _typing.Tick -= OnTyped;
-            _typing.Tick += OnTyped;
-            _typing.Start();
+            CornerRadius = new CornerRadius(8), Background = (Brush)Ui.Theme["Subtle"], Padding = new Thickness(2),
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 3, 10, 3),
         };
-        box.Children.Add(_filter);
-        box.Children.Add(hint);
-        DockPanel.SetDock(box, Dock.Right);
-        bar.Children.Add(box);
-
-        var seg = new Border { CornerRadius = new CornerRadius(8), Background = (Brush)Ui.Theme["Subtle"], Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left };
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var row = new WrapPanel { Orientation = Orientation.Horizontal };
         foreach (var (period, index) in Period.Presets(DateTime.Now).Select((p, i) => (p, i)))
         {
             int at = index;
@@ -236,12 +256,29 @@ public partial class HistoryWindow : Window
             row.Children.Add(rb);
         }
         seg.Child = row;
-        var left = new StackPanel { Orientation = Orientation.Horizontal };
-        left.Children.Add(seg);
+        bar.Children.Add(seg);
+
         _day.Content = "Pick a day  ▾";
         _day.Click += async (_, _) => await OpenDayMenu();
-        left.Children.Add(_day);
-        bar.Children.Add(left);
+        bar.Children.Add(_day);
+
+        var box = new Grid { MinWidth = 180, Width = 220, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 3, 0, 3) };
+        _filter = new TextBox { Style = (Style)Ui.Theme["Field"], ToolTip = "Show only the rows that have these words in them: every word has to be there, in any order and any case, and part of a word is enough" };
+        var hint = _filterHint;
+        _filter.TextChanged += (_, _) =>
+        {
+            hint.Visibility = _filter.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            // Wait for a pause in the typing, so each letter doesn't redraw the page
+            _typing ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _typing.Stop();
+            _typing.Tick -= OnTyped;
+            _typing.Tick += OnTyped;
+            _typing.Start();
+        };
+        box.Children.Add(_filter);
+        box.Children.Add(hint);
+        bar.Children.Add(box);
+
         PeriodHost.Child = bar;
     }
 
@@ -386,6 +423,8 @@ public partial class HistoryWindow : Window
 
     // ---- Window chrome ------------------------------------------------------------------------------------------
 
+    private void UpdateScaleButton() => _scaleLabel.Text = $"Text size: {_windowScale.Percent}%";
+
     /// <summary>
     /// Puts the window next to <paramref name="anchor"/> (the panel): to its left if that is on the desktop, else to its right,
     /// at the same height, so it opens on the monitor the panel is on and not wherever the system would centre it (with several
@@ -394,28 +433,58 @@ public partial class HistoryWindow : Window
     public void PlaceBeside(Window anchor)
     {
         WindowStartupLocation = WindowStartupLocation.Manual;
-        double left = anchor.Left - Width - 12;
-        if (left < SystemParameters.VirtualScreenLeft) left = anchor.Left + anchor.ActualWidth + 12;
-        (Left, Top) = (left, anchor.Top);
-        KeepOnScreen();
+        var work = WindowScale.WorkAreaFor(anchor);
+        var w = Math.Min(Width, work.Width);
+        double left = anchor.Left - w - 12;
+        if (left < work.Left) left = anchor.Left + anchor.ActualWidth + 12;
+        var box = UiScale.ClampToWorkArea(left, anchor.Top, Width, Height, BaseMinWidth, BaseMinHeight, _windowScale.Percent, work);
+        (Left, Top, Width, Height) = (box.Left, box.Top, box.Width, box.Height);
+    }
+
+    /// <summary>Returns this window to normal text size and centres its default bounds on the main monitor.</summary>
+    public void ResetScaleAndBounds()
+    {
+        _resetting = true;
+        try
+        {
+            _settings.Breakdown = null;
+            _settings.BreakdownScale = UiScale.Default;
+            if (WindowState != WindowState.Normal) WindowState = WindowState.Normal;
+            _windowScale.SetScale(UiScale.Default, resizeOuter: false);
+            var wa = SystemParameters.WorkArea;
+            var work = new WorkArea(wa.Left, wa.Top, wa.Width, wa.Height);
+            var w = Math.Min(DefaultWidth, work.Width);
+            var h = Math.Min(DefaultHeight, work.Height);
+            var left = work.Left + Math.Max(0, (work.Width - w) / 2);
+            var top = work.Top + Math.Max(0, (work.Height - h) / 2);
+            var box = UiScale.ClampToWorkArea(left, top, DefaultWidth, DefaultHeight, BaseMinWidth, BaseMinHeight, UiScale.Default, work);
+            MaxWidth = work.Width;
+            MaxHeight = work.Height;
+            MinWidth = box.MinWidth;
+            MinHeight = box.MinHeight;
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Width = box.Width;
+            Height = box.Height;
+            Left = box.Left;
+            Top = box.Top;
+            if (Math.Abs(Left - box.Left) > 0.5) Left = box.Left;
+            _settings.Breakdown = null;
+            _settings.BreakdownScale = UiScale.Default;
+            UpdateScaleButton();
+            _settings.SaveSoon();
+        }
+        finally
+        {
+            if (IsLoaded && IsVisible) Dispatcher.BeginInvoke(() => _resetting = false, DispatcherPriority.Loaded);
+            else _resetting = false;
+        }
     }
 
     private void Remember()
     {
-        if (WindowState != WindowState.Normal) return;
+        if (!IsLoaded || !IsVisible || _resetting || WindowState != WindowState.Normal || WindowScale.GetOffScreenSnapshot(this)) return;
         _settings.Breakdown = new Bounds(Left, Top, Width, Height);
-        _saveSoon ??= new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => { _saveSoon!.Stop(); _settings.Save(); }, Dispatcher);
-        _saveSoon.Stop();
-        _saveSoon.Start();
-    }
-
-    /// <summary>Saved on another monitor layout: pull it back onto the desktop.</summary>
-    private void KeepOnScreen()
-    {
-        double l = SystemParameters.VirtualScreenLeft, t = SystemParameters.VirtualScreenTop;
-        double r = l + SystemParameters.VirtualScreenWidth, b = t + SystemParameters.VirtualScreenHeight;
-        Left = Math.Clamp(Left, l, Math.Max(l, r - 200));
-        Top = Math.Clamp(Top, t, Math.Max(t, b - 100));
+        _settings.SaveSoon();
     }
 
     [DllImport("dwmapi.dll")]

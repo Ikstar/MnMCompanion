@@ -30,6 +30,9 @@ public partial class App : Application
         if (args.Updated) UpdateService.WaitForPreviousToExit(Environment.ProcessPath, TimeSpan.FromSeconds(15));
 
         _settings = Settings.Load();
+        // A run that only writes a report or a picture and quits (--about, --diagnose, --contribute, --archive, --snapshot) never writes the player's
+        // settings: what it finds, or a settings file it couldn't read, is left as it was
+        if (args.About || args.Diagnose || args.Contribute is not null || args.Archive || args.Snapshot is not null) _settings.ReadOnly = true;
         // A run pointed at another game folder (a test, a picture, a borrowed copy) keeps its own saved copy and sessions and saves no settings,
         // so what it reads can never end up in the player's own database
         var other = args.Ledger is null ? null : LedgerDb.OtherFolder(args.Ledger);
@@ -88,6 +91,15 @@ public partial class App : Application
         _panel.WhatsNewRequested += () => OpenWhatsNew(since: null);
         _panel.TimersRequested += () => Timers().Toggle();
         _panel.HistoryPageRequested += OpenHistoryPage;
+        // ⓘ → Reset window positions & scaling: the History and Timers windows come back to normal size on the main monitor too
+        _panel.ResetLayoutRequested += () =>
+        {
+            _breakdown?.ResetScaleAndBounds();
+            _timers?.ResetScaleAndBounds();
+        };
+        // An update restarting the app (or Windows logging out): the tabs out in their own windows close still marked open, and the settings are written first
+        _updates.Restarting += () => _panel?.PrepareForExit();
+        SessionEnding += (_, _) => _panel?.PrepareForExit();
         _panel.Show();
         if (!_settings.ReadOnly)
         {
@@ -143,6 +155,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // the tabs' windows and the map let go of, and any settings still waiting to be written written (both safe if already done)
+        _panel?.PrepareForExit();
+        _settings?.FlushSave();
         CommunityAccess.Reader = null;
         _sharing?.Dispose();
         _community?.Dispose();
@@ -184,11 +199,13 @@ public partial class App : Application
             if (File.Exists(@"Z:\proc\version")) signs.Add(@"Z:\proc\version can be read");
             var linux = GameFolderFinder.LinuxRoot();
             var chosen = _settings.LedgerRoot;
+            var windowTest = WindowTest();   // first: it also measures the screen's scaling for the display line
             text = GameFolderFinder.Report(new DiagnoseFacts(
                 AppVersion.Show(AppVersion.Current()), System.Runtime.InteropServices.RuntimeInformation.OSDescription + " (reports " + Environment.OSVersion.VersionString + ")",
                 System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription, GameFolderFinder.RunningUnderWine(), signs.Count == 0 ? "no signs" : string.Join(", ", signs), env, linux,
                 _store.LedgerRoot, LedgerLocator.DefaultRoot(), LedgerLocator.Find().Count, chosen, chosen is null ? 0 : LedgerLocator.Find(chosen).Count,
-                linux is null ? [] : GameFolderFinder.Find(linux), WindowTest(), WebViewState(), Settings.Folder));
+                linux is null ? [] : GameFolderFinder.Find(linux), windowTest, WebViewState(), Settings.Folder,
+                Display: DisplayLine(), Windows: WindowsLine()));
         }
         catch (Exception ex)
         {
@@ -207,6 +224,7 @@ public partial class App : Application
             var window = new Window { Width = 220, Height = 90, Left = -20000, Top = 0, ShowInTaskbar = false, ShowActivated = false, Content = new System.Windows.Controls.TextBlock { Text = "Companion", Margin = new Thickness(12) } };
             window.Show();
             Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            _testPixelsPerDip = VisualTreeHelper.GetDpi(window).PixelsPerDip;
             RenderVisual(window, Math.Max(1, (int)window.ActualWidth), Math.Max(1, (int)window.ActualHeight), png);
             window.Close();
             return new FileInfo(png).Length > 0 ? "a window could be shown and drawn" : "a window was shown but the picture of it was empty";
@@ -216,6 +234,54 @@ public partial class App : Application
             return "failed: " + ex.GetType().Name + ": " + GameFolderFinder.Mask(ex.Message);
         }
         finally { try { File.Delete(png); } catch (IOException) { } }
+    }
+
+    /// <summary>The screen's scaling as the test window was drawn at it (pixels per device-independent unit); null until <see cref="WindowTest"/> has run.</summary>
+    private double? _testPixelsPerDip;
+
+    /// <summary>
+    /// For <c>--diagnose</c>: how the screen looks to the program, in numbers only: its scaling, the main monitor's work area, the whole desktop, and the
+    /// Linux display variables (Wine passes them through).
+    /// </summary>
+    private string DisplayLine()
+    {
+        double pixelsPerDip;
+        try { pixelsPerDip = _testPixelsPerDip ?? VisualTreeHelper.GetDpi(new DrawingVisual()).PixelsPerDip; }
+        catch (InvalidOperationException) { pixelsPerDip = 1.0; }
+        var wa = SystemParameters.WorkArea;
+        static string Env(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value ? value : "(unset)";
+        return FormattableString.Invariant(
+            $"pixelsPerDip={pixelsPerDip:0.##} primaryWork={wa.Left:0},{wa.Top:0} {wa.Width:0}x{wa.Height:0} virtual={SystemParameters.VirtualScreenLeft:0},{SystemParameters.VirtualScreenTop:0} {SystemParameters.VirtualScreenWidth:0}x{SystemParameters.VirtualScreenHeight:0} DISPLAY={Env("DISPLAY")} WAYLAND_DISPLAY={Env("WAYLAND_DISPLAY")} GAMESCOPE_WAYLAND_DISPLAY={Env("GAMESCOPE_WAYLAND_DISPLAY")}");
+    }
+
+    /// <summary>
+    /// For <c>--diagnose</c>: each window's text size, whether <c>settings.json</c> could be read, and the tabs set to open in their own windows
+    /// (page names only: never a character).
+    /// </summary>
+    private string WindowsLine()
+    {
+        var tabs = new List<string>();
+        foreach (var page in TabDockPolicy.PageNames)
+        {
+            if (!_settings.DetachedTabs.TryGetValue(page, out var st) || st is null) continue;
+            tabs.Add(FormattableString.Invariant($"{page}(open={(st.Open ? "yes" : "no")},compact={(st.Compact ? "yes" : "no")},scale={st.Scale}%)"));
+        }
+        var line = FormattableString.Invariant($"panel={_settings.PanelScale}% history={_settings.BreakdownScale}% timers={_settings.TimersScale}%");
+        if (_settings.LoadNote is not null) line += $" note=\"{_settings.LoadNote}\"";
+        return line + " detached=" + (tabs.Count == 0 ? "none" : "[" + string.Join(", ", tabs) + "]");
+    }
+
+    /// <summary>For <c>--about</c>: each window's text size, and the tabs that open in their own windows (page names only).</summary>
+    private string ScalesLine()
+    {
+        var open = new List<string>();
+        foreach (var page in TabDockPolicy.PageNames)
+        {
+            if (!_settings.DetachedTabs.TryGetValue(page, out var st) || st is not { Open: true }) continue;
+            open.Add($"{page} {st.Scale}%" + (st.Compact ? " mini" : ""));
+        }
+        return $"Scales: Panel {_settings.PanelScale}% · History {_settings.BreakdownScale}% · Timers {_settings.TimersScale}%"
+            + (open.Count > 0 ? " · detached: " + string.Join(", ", open) : "");
     }
 
     /// <summary>Whether Microsoft's web view (the map page's) exists here; under Wine it normally doesn't, and the map page then offers the browser instead.</summary>
@@ -244,6 +310,7 @@ public partial class App : Application
             $"can update itself: {(updates.CanInstall ? "yes" : "no (not a published single-file program, or its folder is read-only)")}",
             $"checks for updates: {(_settings.CheckForUpdates ? "yes" : "no")}; installs them by itself: {(_settings.CheckForUpdates && _settings.InstallUpdates ? "yes" : "no")}; skipped version: {_settings.SkippedVersion ?? "none"}",
             $"timers: window {(_settings.TimersOpen ? "open" : "closed")}, on top {(_settings.TimersOnTop ? "yes" : "no")}, buttons strip {(_settings.TimersButtons ? "yes" : "no")}, background {_settings.TimersOpacity}%",
+            ScalesLine(),
             $"settings and database: {Settings.Folder}",
             $"game data: {_store.LedgerRoot}",
         };
@@ -429,6 +496,9 @@ public partial class App : Application
     private void Snapshot(string path, Args args)
     {
         _store.Refresh();
+        // --scale: every window is drawn at that text size; without --size each window takes its own normal size at that scale
+        int scale = UiScale.Nearest(args.Scale ?? UiScale.Default);
+        double factor = UiScale.Factor(scale);
         if (args.Breakdown)
         {
             // The History window, with the saved history built into a scratch file for the picture (not the player's own)
@@ -438,11 +508,12 @@ public partial class App : Application
                 using var history = new HistoryData(() => _store.LedgerRoot, scratch, automatic: false);
                 history.RefreshNow();
                 var page = args.Page ?? "Loot";
-                var window = new HistoryWindow(_store, new Settings { ReadOnly = true, HistoryPage = page }, history) { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual };
+                var window = new HistoryWindow(_store, new Settings { ReadOnly = true, HistoryPage = page, BreakdownScale = scale }, history) { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual };
+                WindowScale.SetOffScreenSnapshot(window, true);
                 window.Left = -20000;
                 window.Top = 0;
-                window.Width = args.Width;
-                window.Height = args.Height;
+                window.Width = args.HasSize ? args.Width : 1560 * factor;
+                window.Height = args.HasSize ? args.Height : 900 * factor;
                 window.Show();
                 Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                 if (page.Equals("Loot", StringComparison.OrdinalIgnoreCase))
@@ -461,6 +532,7 @@ public partial class App : Application
                     if (args.Tab is { } tab) window.PickTab(tab);
                 }
                 Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                WriteSnapshotMeta(window, path);
                 RenderVisual(window, (int)window.ActualWidth, (int)window.ActualHeight, path);
                 window.Close();
             }
@@ -479,9 +551,12 @@ public partial class App : Application
             {
                 using var history = new HistoryData(() => _store.LedgerRoot, scratch, automatic: false);
                 history.RefreshNow();
-                var settings = new Settings { ReadOnly = true, ShareWithCommunity = true, ShareConsentSchema = Community.ContributionBuilder.Schema };
+                var settings = new Settings { ReadOnly = true, ShareWithCommunity = true, ShareConsentSchema = Community.ContributionBuilder.Schema, PanelScale = scale };
                 var window = new ShareWindow(history, settings, "MnMCompanion " + AppVersion.Show(AppVersion.Current()), ShareMode.Settings)
                     { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = 0 };
+                // its width comes from the scale (520 at normal size); its height from what it shows
+                WindowScale.SetOffScreenSnapshot(window, true);
+                window.SizeToContent = SizeToContent.Height;
                 window.Show();
                 var until = DateTime.UtcNow.AddSeconds(15);
                 while (!window.PreviewReady && DateTime.UtcNow < until)
@@ -490,6 +565,7 @@ public partial class App : Application
                     Thread.Sleep(30);
                 }
                 Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                WriteSnapshotMeta(window, path);
                 RenderVisual(window, (int)window.ActualWidth, (int)window.ActualHeight, path);
                 window.Close();
             }
@@ -507,24 +583,94 @@ public partial class App : Application
             try
             {
                 var corpses = TimersSample(folder);
-                var settings = new Settings { ReadOnly = true, TimersOpacity = int.TryParse(args.Opacity, out var opacity) ? opacity : 100, TimersButtons = args.Buttons };
+                var settings = new Settings { ReadOnly = true, TimersOpacity = int.TryParse(args.Opacity, out var opacity) ? opacity : 100, TimersButtons = args.Buttons, TimersScale = scale };
                 var timers = new TimersWindow(settings, () => folder, () => corpses);
                 Window window = args.TimersSetup
                     ? new TimerSetupWindow(timers, settings) { WindowStartupLocation = WindowStartupLocation.Manual, ShowInTaskbar = false }
                     : timers;
+                WindowScale.SetOffScreenSnapshot(timers, true);
+                WindowScale.SetOffScreenSnapshot(window, true);
                 window.ShowActivated = false;
-                window.Width = args.Width;
-                window.Height = args.Height;
+                window.Width = args.HasSize ? args.Width : (args.TimersSetup ? 660 : 340) * factor;
+                window.Height = args.HasSize ? args.Height : (args.TimersSetup ? 700 : 720) * factor;
                 window.Left = -20000;
                 window.Top = 0;
                 window.Show();
                 Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                WriteSnapshotMeta(window, path);
                 RenderVisual(window, (int)window.ActualWidth, (int)window.ActualHeight, path);
                 window.Close();
             }
             finally
             {
                 try { Directory.Delete(folder, recursive: true); } catch (IOException) { }
+            }
+            return;
+        }
+        if (args.Popout is { } rawPopout)
+        {
+            // One page out in its own window (full, or --compact for a page that has a compact view), shown far off screen; the saved history for the
+            // Vendor, Trades, Items and Harvest pages is built into a scratch file for the picture (not the player's own)
+            var popPage = TabDockPolicy.IsKnownPage(rawPopout, out var knownPage) ? knownPage : "Loot";
+            var scratch = Path.Combine(Path.GetTempPath(), "mnmcompanion-snapshot-" + Guid.NewGuid().ToString("N") + ".db");
+            try
+            {
+                using var history = new HistoryData(() => _store.LedgerRoot, scratch, automatic: false);
+                history.RefreshNow();
+                var settings = new Settings { ReadOnly = true, View = args.View ?? "Value", PanelScale = scale };
+                settings.DetachedTabs[popPage] = new DetachedTabState { Open = true, Scale = scale, Compact = args.Compact && TabDockPolicy.SupportsCompact(popPage) };
+                var session = new SessionScope(_store);
+                IMiniPage page = popPage switch
+                {
+                    "Map" => new MapPanel(_store, session, settings),
+                    "Vendor" => new VendorMini(_store, history, session, _ => { }),
+                    "Trades" => new TradesMini(_store, history, session, _ => { }),
+                    "Items" => new ItemsMini(_store, history, session, _ => { }),
+                    "Harvest" => new HarvestMini(_store, history, session, _ => { }),
+                    "Recipes" => new RecipesPanel(settings, args.Recipes),
+                    "Market" => new MarketPanel(_store, session, settings, args.Market),
+                    _ => new LootPanel(_store, session, settings.View, _ => { }, (_, _, _) => { }),
+                };
+                try
+                {
+                    if (args.Day is { } shownDay) session.ShowDay(shownDay);
+                    if (page is RecipesPanel recipes) recipes.Show(args.Tab, args.Search);
+                    if (page is MarketPanel market) market.Show(args.Tab, args.Search);
+                    page.RefreshNow();
+                    string Who() => _store.Selected is { } s ? $"{s.Character} · {s.ServerName}" : "No ledger";
+                    // "shutting down" from the start: closing the picture's window neither puts the page back anywhere nor marks the tab closed
+                    var tw = new TabWindow(popPage, page, settings, session, Who, () => true, _ => { });
+                    WindowScale.SetOffScreenSnapshot(tw, true);
+                    tw.ShowActivated = false;
+                    tw.Left = -20000;
+                    tw.Top = 0;
+                    if (args.HasSize)
+                    {
+                        tw.Width = args.Width;
+                        tw.Height = args.Height;
+                    }
+                    else
+                    {
+                        tw.Width = 420 * factor;
+                        if (!tw.IsCompact) tw.Height = 520 * factor;   // a compact window fits its own height to what it shows
+                    }
+                    tw.Show();
+                    Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                    page.RefreshNow();
+                    Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                    WriteSnapshotMeta(tw, path);
+                    RenderVisual(tw, Math.Max(1, (int)Math.Round(tw.ActualWidth)), Math.Max(1, (int)Math.Round(tw.ActualHeight)), path);
+                    tw.Close();
+                }
+                finally
+                {
+                    (page as IDisposable)?.Dispose();
+                }
+            }
+            finally
+            {
+                foreach (var file in new[] { scratch, scratch + "-wal", scratch + "-shm" })
+                    try { File.Delete(file); } catch (IOException) { }
             }
             return;
         }
@@ -543,8 +689,9 @@ public partial class App : Application
             {
                 using var history = new HistoryData(() => _store.LedgerRoot, scratch, automatic: false);
                 history.RefreshNow();
-                var window = new PanelWindow(_store, new Settings { View = args.View ?? "Value", MiniPage = args.Mini ?? "Loot", ReadOnly = true }, updates, history, args.Recipes, args.Market)
-                    { ShowActivated = false, ShowInTaskbar = false, Width = args.Width, Height = args.Height };
+                var window = new PanelWindow(_store, new Settings { View = args.View ?? "Value", MiniPage = args.Mini ?? "Loot", ReadOnly = true, PanelScale = scale }, updates, history, args.Recipes, args.Market)
+                    { ShowActivated = false, ShowInTaskbar = false, Width = args.HasSize ? args.Width : 480 * factor, Height = args.HasSize ? args.Height : 640 * factor };
+                WindowScale.SetOffScreenSnapshot(window, true);
                 window.Left = -20000;
                 window.Show();
                 if (args.Day is { } shown) window.Panel.ShowDay(shown);
@@ -553,8 +700,7 @@ public partial class App : Application
                 if (args.Mini == "Market") window.ShowMarket(args.Tab, args.Search);
                 window.DrawPageNow();
                 Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-                var content = (FrameworkElement)window.Content;
-                File.WriteAllText(path + ".txt", $"window {window.ActualWidth}x{window.ActualHeight} content {content.ActualWidth}x{content.ActualHeight} dpi {VisualTreeHelper.GetDpi(window).PixelsPerDip}");
+                WriteSnapshotMeta(window, path);
                 RenderVisual(window, (int)window.ActualWidth, (int)window.ActualHeight, path);
                 window.Close();
             }
@@ -581,6 +727,18 @@ public partial class App : Application
         RenderVisual(element, width, height, path);
     }
 
+    /// <summary>
+    /// Writes <c>&lt;png&gt;.txt</c> beside a window's picture: the window's size, the size its contents were laid out at (before the scale is applied),
+    /// its text size and the screen's scaling, so a script can check the layout without looking at the picture.
+    /// </summary>
+    private static void WriteSnapshotMeta(Window window, string path)
+    {
+        var content = ((window.Content as System.Windows.Controls.Decorator)?.Child as FrameworkElement) ?? (window.Content as FrameworkElement);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.WriteAllText(path + ".txt", FormattableString.Invariant(
+            $"window {window.ActualWidth:0.##}x{window.ActualHeight:0.##}  content {(content?.ActualWidth ?? 0):0.##}x{(content?.ActualHeight ?? 0):0.##}  scale {WindowScale.ScaleOf(window)}%  dpi {VisualTreeHelper.GetDpi(window).PixelsPerDip:0.##}"));
+    }
+
     private static void RenderVisual(Visual visual, int width, int height, string path)
     {
         var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
@@ -593,18 +751,42 @@ public partial class App : Application
     }
 }
 
-/// <summary>Command line: <c>--updated</c> (given by an update to the new program: waits for the old one to exit, then says it was updated); <c>--no-share-prompt</c> to start without asking about sharing (for scripts and pictures); <c>--whats-new</c> to open the "what's new" window as the app starts, <c>--no-whats-new</c> never to open it by itself (for scripts and pictures); <c>--suggest</c> to open the "Send a suggestion" window as the app starts; <c>--share</c> to open the "Share data with the community" window as the app starts; <c>--contribute &lt;file or folder&gt;</c> to save the file you can share with the community data and quit; <c>--history</c> to open the History window as the app starts; <c>--about [--report &lt;file&gt;]</c> to write the version and paths to a file and quit; <c>--archive [--db &lt;file&gt;] [--report &lt;file&gt;]</c> to copy every ledger row into the database and quit; <c>--ledger &lt;folder&gt;</c> <c>--character &lt;name&gt;</c> and, for a picture instead of a window, <c>--snapshot &lt;png&gt; [--view Value|Items|Mobs|Feed] [--day yyyy-MM-dd] [--size WxH] [--window [--preview-update | --preview-waiting]]</c>, or <c>--snapshot &lt;png&gt; --breakdown [--page Loot|Trades|Vendors|Changes|Harvest] [--member name] [--tab Looters|Items|Mobs|"Drop rates"|"Loot log"|Sales|Purchases|"Price book"|Log|...] [--drop "a monster"] [--period "7 days"] [--search "words"] [--size WxH]</c> for the History window (<c>--search</c> types into the search box of the page: on Loot that shows the answer across every day). For the Recipes page, <c>--snapshot &lt;png&gt; --window --mini Recipes --recipes &lt;wiki tradeskills json&gt; [--tab "a skill"] [--search "words"]</c> reads that file instead of asking the wiki. For the Market page, <c>--snapshot &lt;png&gt; --window --mini Market --market &lt;auctions json&gt; [--tab Selling|Buying|Yours] [--search "words"]</c> reads that file instead of asking mnm-db.com.</summary>
+/// <summary>Command line: <c>--updated</c> (given by an update to the new program: waits for the old one to exit, then says it was updated); <c>--no-share-prompt</c> to start without asking about sharing (for scripts and pictures); <c>--whats-new</c> to open the "what's new" window as the app starts, <c>--no-whats-new</c> never to open it by itself (for scripts and pictures); <c>--suggest</c> to open the "Send a suggestion" window as the app starts; <c>--share</c> to open the "Share data with the community" window as the app starts; <c>--contribute &lt;file or folder&gt;</c> to save the file you can share with the community data and quit; <c>--history</c> to open the History window as the app starts; <c>--about [--report &lt;file&gt;]</c> to write the version and paths to a file and quit; <c>--archive [--db &lt;file&gt;] [--report &lt;file&gt;]</c> to copy every ledger row into the database and quit; <c>--ledger &lt;folder&gt;</c> <c>--character &lt;name&gt;</c> and, for a picture instead of a window, <c>--snapshot &lt;png&gt; [--view Value|Items|Mobs|Feed] [--day yyyy-MM-dd] [--size WxH] [--window [--preview-update | --preview-waiting]]</c>, or <c>--snapshot &lt;png&gt; --breakdown [--page Loot|Trades|Vendors|Changes|Harvest] [--member name] [--tab Looters|Items|Mobs|"Drop rates"|"Loot log"|Sales|Purchases|"Price book"|Log|...] [--drop "a monster"] [--period "7 days"] [--search "words"] [--size WxH]</c> for the History window (<c>--search</c> types into the search box of the page: on Loot that shows the answer across every day). For the Recipes page, <c>--snapshot &lt;png&gt; --window --mini Recipes --recipes &lt;wiki tradeskills json&gt; [--tab "a skill"] [--search "words"]</c> reads that file instead of asking the wiki. For the Market page, <c>--snapshot &lt;png&gt; --window --mini Market --market &lt;auctions json&gt; [--tab Selling|Buying|Yours] [--search "words"]</c> reads that file instead of asking mnm-db.com. Any picture can take <c>--scale 100|125|150|175|200</c> (the window drawn at that text size, at its own normal size for it unless <c>--size</c> is given), and <c>--snapshot &lt;png&gt; --popout &lt;page&gt; [--compact]</c> draws one page out in its own window (the compact view for Loot, Vendor, Items or Harvest); each window's picture comes with <c>&lt;png&gt;.txt</c> giving its size, text size and DPI.</summary>
 internal sealed record Args(string? Ledger, string? Character, string? Snapshot, string? View, DateOnly? Day, int Width, int Height, bool Window, bool Breakdown, string? Member, string? Tab,
     bool Archive = false, string? Db = null, string? Report = null, bool About = false, bool PreviewUpdate = false, string? Page = null, string? Drop = null, string? Period = null, bool History = false, string? Contribute = null, bool Share = false, bool NoSharePrompt = false, string? Mini = null, bool Diagnose = false, bool Timers = false, bool TimersSetup = false, string? Opacity = null, bool Buttons = false, bool Updated = false, bool PreviewWaiting = false, string? Search = null, string? Recipes = null, string? Market = null, bool WhatsNew = false, bool NoWhatsNew = false, bool Suggest = false)
 {
+    /// <summary><c>--size WxH</c> was given: the picture's window takes exactly that size instead of its own normal size at the scale.</summary>
+    public bool HasSize { get; init; }
+
+    /// <summary><c>--scale &lt;percent&gt;</c>: the text size to draw the picture's window at (snapped to an offered one); null for normal size.</summary>
+    public int? Scale { get; init; }
+
+    /// <summary><c>--popout &lt;page&gt;</c>: draw that page out in its own window (Map, Loot, Vendor, Trades, Items, Harvest, Recipes or Market).</summary>
+    public string? Popout { get; init; }
+
+    /// <summary><c>--compact</c>: with <c>--popout</c>, the page's compact view (Loot, Vendor, Items and Harvest have one).</summary>
+    public bool Compact { get; init; }
+
     public static Args Parse(string[] args)
     {
         string? Value(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
         int w = 390, h = 600;
-        if (Value("--size") is { } size && size.Split('x') is [var sw, var sh] && int.TryParse(sw, out var pw) && int.TryParse(sh, out var ph)) (w, h) = (pw, ph);
+        bool hasSize = false;
+        if (Value("--size") is { } size && size.Split('x') is [var sw, var sh] && int.TryParse(sw, out var pw) && int.TryParse(sh, out var ph))
+        {
+            (w, h) = (pw, ph);
+            hasSize = true;
+        }
+        int? scale = int.TryParse(Value("--scale")?.Trim().TrimEnd('%'), out var sc) ? UiScale.Nearest(sc) : null;
         DateOnly? day = DateOnly.TryParse(Value("--day"), out var d) ? d : null;
         return new Args(Value("--ledger"), Value("--character"), Value("--snapshot"), Value("--view"), day, w, h, args.Contains("--window"), args.Contains("--breakdown"), Value("--member"), Value("--tab"),
             args.Contains("--archive"), Value("--db"), Value("--report"), args.Contains("--about"), args.Contains("--preview-update"), Value("--page"), Value("--drop"), Value("--period"), args.Contains("--history"), Value("--contribute"), args.Contains("--share"), args.Contains("--no-share-prompt"), Value("--mini"), args.Contains("--diagnose"), args.Contains("--timers"), args.Contains("--timers-setup"), Value("--opacity"), args.Contains("--buttons"),
-            args.Contains("--updated"), args.Contains("--preview-waiting"), Value("--search"), Value("--recipes"), Value("--market"), args.Contains("--whats-new"), args.Contains("--no-whats-new"), args.Contains("--suggest"));
+            args.Contains("--updated"), args.Contains("--preview-waiting"), Value("--search"), Value("--recipes"), Value("--market"), args.Contains("--whats-new"), args.Contains("--no-whats-new"), args.Contains("--suggest"))
+        {
+            HasSize = hasSize,
+            Scale = scale,
+            Popout = Value("--popout"),
+            Compact = args.Contains("--compact"),
+        };
     }
 }
