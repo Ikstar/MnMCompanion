@@ -77,7 +77,7 @@ None.
 
 ### System Component Topology
 
-To preserve `MnMCompanion`'s strict dependency boundaries enforced by [`LedgerOnlyTests.cs`](../../tests/MnMCompanion.Tests/LedgerOnlyTests.cs) (`MnMCompanion.Core` uses only .NET BCL; `MnMCompanion.Tests` targets cross-platform `net10.0` without WPF), pure scaling math, tab-docking state normalization, and compact row-slicing live in `MnMCompanion.Core`, while WPF visual handoff, popup scaling, and Win32 monitor work-area queries live in `MnMCompanion`.
+To preserve `MnMCompanion`'s strict dependency boundaries enforced by [`LedgerOnlyTests.cs`](../../tests/MnMCompanion.Tests/LedgerOnlyTests.cs) (`MnMCompanion.Core` uses only .NET BCL; `MnMCompanion.Tests` targets cross-platform `net9.0` without WPF), pure scaling math, tab-docking state normalization, and compact row-slicing live in `MnMCompanion.Core`, while WPF visual handoff, popup scaling, and Win32 monitor work-area queries live in `MnMCompanion`.
 
 ```mermaid
 flowchart TD
@@ -87,7 +87,7 @@ flowchart TD
         Summaries["Existing Summaries (LootDay, VendorSummary, ItemChangeSummary, HarvestSummary)"]
     end
 
-    subgraph App["MnMCompanion (WPF net10.0-windows)"]
+    subgraph App["MnMCompanion (WPF net9.0-windows)"]
         Settings["Settings (Additive Scales & DetachedTabs, Shared Debounced Save)"]
         WinScale["WindowScale Helper (Root LayoutTransform, Popup/Dialog Scale, Monitor WorkArea)"]
         Panel["PanelWindow (Docked Host, 2s Poll Coordinator, Shutdown Guard)"]
@@ -281,7 +281,7 @@ sequenceDiagram
 #### Phase 1: Pure-BCL Scaling, Docking, and Diagnostics (`MnMCompanion.Core` & `MnMCompanion.Tests`)
 
 1.  **`src/MnMCompanion.Core/UiScale.cs` (`[CREATE]`)**
-    *   **Purpose**: Provides pure-BCL window scale presets, step navigation, and monitor work-area geometry calculations (`namespace MnMCompanion`) testable under cross-platform `net10.0`.
+    *   **Purpose**: Provides pure-BCL window scale presets, step navigation, and monitor work-area geometry calculations (`namespace MnMCompanion`) testable under cross-platform `net9.0`.
     *   **Public API Contract**:
         *   `public readonly record struct WorkArea(double Left, double Top, double Width, double Height)` with `double Right => Left + Width` and `double Bottom => Top + Height`.
         *   `public readonly record struct WindowBox(double Left, double Top, double Width, double Height, double MinWidth, double MinHeight)`.

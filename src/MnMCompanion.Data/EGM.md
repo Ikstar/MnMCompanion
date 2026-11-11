@@ -1,7 +1,7 @@
 # MnMCompanion.Data
 
 ## Overview
-`MnMCompanion.Data` (`net10.0`, namespace `MnMCompanion.Data`, defined in [MnMCompanion.Data.csproj](./MnMCompanion.Data.csproj)) is the local SQLite persistence, incremental file-archiving, event-projection, and history-query layer for MnM Companion. Because the game client rotates old entries into archive folders and may prune files over time, `MnMCompanion.Data` maintains an append-only local copy (`ledger.db`) of all imported ledger rows and NPC journal lines across every server and character on the machine, projects character-owned rows into typed history tables, and assembles privacy-preserving community export payloads.
+`MnMCompanion.Data` (`net9.0`, namespace `MnMCompanion.Data`, defined in [MnMCompanion.Data.csproj](./MnMCompanion.Data.csproj)) is the local SQLite persistence, incremental file-archiving, event-projection, and history-query layer for MnM Companion. Because the game client rotates old entries into archive folders and may prune files over time, `MnMCompanion.Data` maintains an append-only local copy (`ledger.db`) of all imported ledger rows and NPC journal lines across every server and character on the machine, projects character-owned rows into typed history tables, and assembles privacy-preserving community export payloads.
 
 ## Interface
 - **Database & Schema ([LedgerDb.cs](./LedgerDb.cs))**
