@@ -51,6 +51,7 @@ internal sealed class TimerSetupWindow : Window
         MinHeight = 420;
         UseLayoutRounding = true;
         ShowInTaskbar = true;
+        Ui.ApplyWindowIcon(this);
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");

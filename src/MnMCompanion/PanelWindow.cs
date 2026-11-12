@@ -85,6 +85,7 @@ internal sealed class PanelWindow : Window
             CaptionHeight = 0, ResizeBorderThickness = new Thickness(5), GlassFrameThickness = new Thickness(0),
             CornerRadius = new CornerRadius(0), UseAeroCaptionButtons = false,
         });
+        Ui.ApplyWindowIcon(this);
         Background = new SolidColorBrush(Color.FromRgb(0x12, 0x16, 0x1C));
         BorderBrush = new SolidColorBrush(Color.FromArgb(0x80, 0x90, 0xA0, 0xB0));
         BorderThickness = new Thickness(1);

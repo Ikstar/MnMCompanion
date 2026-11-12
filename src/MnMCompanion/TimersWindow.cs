@@ -100,6 +100,7 @@ internal sealed class TimersWindow : Window
         MinHeight = BaseMinHeight;
         UseLayoutRounding = true;
         ShowInTaskbar = false;
+        Ui.ApplyWindowIcon(this);
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 

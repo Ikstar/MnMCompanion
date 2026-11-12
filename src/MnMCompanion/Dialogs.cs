@@ -21,6 +21,7 @@ internal static class Dialogs
         window.ResizeMode = ResizeMode.NoResize;
         window.WindowStartupLocation = WindowStartupLocation.CenterOwner;
         window.ShowInTaskbar = true;
+        Ui.ApplyWindowIcon(window);
         window.Background = (Brush)Ui.Theme["Window"];
         window.Foreground = Palette.Text;
         window.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");

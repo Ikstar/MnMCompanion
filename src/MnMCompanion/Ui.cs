@@ -1,9 +1,14 @@
+using System.Buffers.Binary;
 using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using MnMCompanion.Loot;
 
 namespace MnMCompanion;
@@ -11,8 +16,32 @@ namespace MnMCompanion;
 /// <summary>The shared styles and brushes (Theme.xaml and Menus.xaml), merged into each window.</summary>
 public static class Ui
 {
+    private const int GWL_STYLE = -16;
+    private const int WS_SYSMENU = 0x00080000;
+    private const int WS_MINIMIZEBOX = 0x00020000;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_FRAMECHANGED = 0x0020;
+    private const uint WM_SETICON = 0x0080;
+    private const int ICON_SMALL = 0;
+    private const int ICON_BIG = 1;
+    private const int SM_CXICON = 11;
+    private const int SM_CYICON = 12;
+    private const int SM_CXSMICON = 49;
+    private const int SM_CYSMICON = 50;
+    private const uint IMAGE_ICON = 1;
+    private const uint LR_SHARED = 0x8000;
+    private const int IDI_APPLICATION = 32512;
+
     private static ResourceDictionary? _theme;
     private static ResourceDictionary? _menus;
+    private static ImageSource? _appIcon;
+    private static bool _appIconLoaded;
+    private static IntPtr _smallHIcon;
+    private static IntPtr _bigHIcon;
+    private static bool _nativeIconsLoaded;
 
     /// <summary>The program's own name as the resource addresses spell it (it is the file name, so it follows a rename).</summary>
     private static readonly string AssemblyName = typeof(Ui).Assembly.GetName().Name!;
@@ -26,6 +55,165 @@ public static class Ui
     {
         Source = new Uri($"pack://application:,,,/{AssemblyName};component/Menus.xaml", UriKind.Absolute),
     };
+
+    /// <summary>The program's icon (app.ico), with every size from 16 to 256 px for the taskbar and Alt+Tab.</summary>
+    public static ImageSource? AppIcon
+    {
+        get
+        {
+            if (!_appIconLoaded)
+            {
+                _appIconLoaded = true;
+                try
+                {
+                    var decoder = new IconBitmapDecoder(
+                        new Uri($"pack://application:,,,/{AssemblyName};component/app.ico", UriKind.Absolute),
+                        BitmapCreateOptions.PreservePixelFormat,
+                        BitmapCacheOption.OnLoad);
+                    _appIcon = decoder.Frames.FirstOrDefault(f => f.PixelWidth == 32) ?? decoder.Frames[0];
+                }
+                catch (Exception ex) when (ex is UriFormatException or IOException or NotSupportedException) { }
+            }
+            return _appIcon;
+        }
+    }
+
+    /// <summary>
+    /// Gives a window the program's icon both in WPF and on its Win32 handle (WM_SETICON), and restores WS_SYSMENU on borderless taskbar
+    /// windows after WindowChrome has taken over their frame so Windows 10/11 shows the icon on the taskbar button.
+    /// </summary>
+    public static void ApplyWindowIcon(Window window)
+    {
+        window.Icon = AppIcon;
+        window.SourceInitialized += (_, _) => ApplyNativeIcon(window);
+    }
+
+    private static void ApplyNativeIcon(Window window)
+    {
+        if (WindowScale.GetOffScreenSnapshot(window)) return;
+        var hwnd = new WindowInteropHelper(window).Handle;
+        if (hwnd == IntPtr.Zero) return;
+
+        // Borderless WPF windows (WindowStyle.None) lose WS_SYSMENU, which makes the Windows taskbar omit their icon and ignore taskbar clicks.
+        // Restoring WS_SYSMENU while WindowChrome owns the frame brings back the taskbar icon, Alt+Tab icon and click-to-minimise.
+        if (window.ShowInTaskbar && window.WindowStyle == WindowStyle.None)
+        {
+            int style = GetWindowLongW(hwnd, GWL_STYLE);
+            int want = WS_SYSMENU | (window.ResizeMode != ResizeMode.NoResize ? WS_MINIMIZEBOX : 0);
+            if ((style & want) != want)
+            {
+                SetWindowLongW(hwnd, GWL_STYLE, style | want);
+                SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            }
+        }
+
+        EnsureNativeIcons();
+        if (_smallHIcon != IntPtr.Zero) SendMessageW(hwnd, WM_SETICON, (IntPtr)ICON_SMALL, _smallHIcon);
+        if (_bigHIcon != IntPtr.Zero) SendMessageW(hwnd, WM_SETICON, (IntPtr)ICON_BIG, _bigHIcon);
+    }
+
+    private static void EnsureNativeIcons()
+    {
+        if (_nativeIconsLoaded) return;
+        _nativeIconsLoaded = true;
+        try
+        {
+            int smCx = Math.Max(16, GetSystemMetrics(SM_CXSMICON));
+            int smCy = Math.Max(16, GetSystemMetrics(SM_CYSMICON));
+            int lgCx = Math.Max(32, GetSystemMetrics(SM_CXICON));
+            int lgCy = Math.Max(32, GetSystemMetrics(SM_CYICON));
+
+            var uri = new Uri($"pack://application:,,,/{AssemblyName};component/app.ico", UriKind.Absolute);
+            if (Application.GetResourceStream(uri)?.Stream is { } stream)
+            {
+                using (stream)
+                {
+                    using var ms = new MemoryStream();
+                    stream.CopyTo(ms);
+                    var bytes = ms.ToArray();
+                    _smallHIcon = CreateHIconFromIco(bytes, smCx, smCy);
+                    _bigHIcon = CreateHIconFromIco(bytes, lgCx, lgCy);
+                }
+            }
+
+            if (_smallHIcon == IntPtr.Zero || _bigHIcon == IntPtr.Zero)
+            {
+                var module = GetModuleHandleW(null);
+                if (module != IntPtr.Zero)
+                {
+                    if (_smallHIcon == IntPtr.Zero) _smallHIcon = LoadImageW(module, (IntPtr)IDI_APPLICATION, IMAGE_ICON, smCx, smCy, LR_SHARED);
+                    if (_bigHIcon == IntPtr.Zero) _bigHIcon = LoadImageW(module, (IntPtr)IDI_APPLICATION, IMAGE_ICON, lgCx, lgCy, LR_SHARED);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+    }
+
+    private static IntPtr CreateHIconFromIco(byte[] ico, int cx, int cy)
+    {
+        if (ico.Length < 6) return IntPtr.Zero;
+        ushort reserved = BinaryPrimitives.ReadUInt16LittleEndian(ico.AsSpan(0, 2));
+        ushort type = BinaryPrimitives.ReadUInt16LittleEndian(ico.AsSpan(2, 2));
+        ushort count = BinaryPrimitives.ReadUInt16LittleEndian(ico.AsSpan(4, 2));
+        if (reserved != 0 || type != 1 || count == 0 || ico.Length < 6 + count * 16) return IntPtr.Zero;
+
+        int bestOffset = -1, bestSize = 0, bestW = 0, bestH = 0;
+        for (int i = 0; i < count; i++)
+        {
+            int entry = 6 + i * 16;
+            int w = ico[entry] == 0 ? 256 : ico[entry];
+            int h = ico[entry + 1] == 0 ? 256 : ico[entry + 1];
+            int size = BinaryPrimitives.ReadInt32LittleEndian(ico.AsSpan(entry + 8, 4));
+            int offset = BinaryPrimitives.ReadInt32LittleEndian(ico.AsSpan(entry + 12, 4));
+            if (size <= 0 || offset < 0 || offset > ico.Length - size) continue;
+
+            if (bestOffset < 0)
+            {
+                bestOffset = offset; bestSize = size; bestW = w; bestH = h;
+                continue;
+            }
+
+            bool currentFits = bestW >= cx && bestH >= cy;
+            bool candidateFits = w >= cx && h >= cy;
+            if (candidateFits && (!currentFits || w < bestW || (w == bestW && h < bestH)))
+            {
+                bestOffset = offset; bestSize = size; bestW = w; bestH = h;
+            }
+            else if (!currentFits && (w > bestW || (w == bestW && h > bestH)))
+            {
+                bestOffset = offset; bestSize = size; bestW = w; bestH = h;
+            }
+        }
+
+        if (bestOffset < 0) return IntPtr.Zero;
+        var slice = ico.AsSpan(bestOffset, bestSize).ToArray();
+        return CreateIconFromResourceEx(slice, (uint)slice.Length, true, 0x00030000u, cx, cy, 0u);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLongW(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern int SetWindowLongW(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CreateIconFromResourceEx(byte[] presbits, uint dwResSize, [MarshalAs(UnmanagedType.Bool)] bool fIcon, uint dwVer, int cxDesired, int cyDesired, uint Flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr LoadImageW(IntPtr hInst, IntPtr name, uint type, int cx, int cy, uint fuLoad);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandleW(string? lpModuleName);
 }
 
 /// <summary>Colours used for people and things, the same everywhere.</summary>

@@ -58,6 +58,7 @@ public partial class HistoryWindow : Window
     {
         Resources.MergedDictionaries.Add(Ui.Theme);
         InitializeComponent();
+        Ui.ApplyWindowIcon(this);
         _smallWindow = store;
         _settings = settings;
         _focus = new HistoryFocus(new LootStore(store.StateRoot, store.LedgerRoot), StartScope(store, settings));
