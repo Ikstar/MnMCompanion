@@ -714,12 +714,12 @@ To try it without the game, `scripts/make-demo-ledger.py` writes a made-up game 
 
 ### Building it yourself
 
-You need the [.NET 10 SDK](https://dotnet.microsoft.com/download).
+You need the [.NET 9 SDK](https://dotnet.microsoft.com/download).
 
 ```
 dotnet build MnMCompanion.sln
 dotnet test  MnMCompanion.sln
-src\MnMCompanion\bin\Debug\net10.0-windows\MnMCompanion.exe
+src\MnMCompanion\bin\Debug\net9.0-windows\MnMCompanion.exe
 ```
 
 A run from the source folder can't replace itself, so it will send you to the download page instead of updating.

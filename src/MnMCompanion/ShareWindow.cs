@@ -59,11 +59,18 @@ internal sealed class ShareWindow : Window
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = true;
+        Ui.ApplyWindowIcon(this);
         Topmost = mode == ShareMode.Ask;
         Background = (Brush)Ui.Theme["Window"];
         Foreground = Palette.Text;
         FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
         SourceInitialized += (_, _) => DarkTitleBar();
+        // drawn at the scale of the window that opened it (the main panel's when it opens by itself); the height still follows the content
+        SourceInitialized += (_, _) =>
+        {
+            var percent = Owner is not null ? WindowScale.ScaleOf(Owner) : _settings.PanelScale;
+            WindowScale.AttachDialog(this, baseWidth: 520, baseMaxHeight: 900, percent);
+        };
 
         _stack.Children.Add(new TextBlock
         {

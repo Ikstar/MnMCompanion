@@ -27,6 +27,9 @@ internal sealed class SessionScope(LootStore store)
 
     public DateOnly Day => _picked ?? Today;
 
+    /// <summary>Whether what is on show is today's live session (the default when nothing historical or archived was picked).</summary>
+    public bool IsLiveDefault => Day == Today && (!_wholeDay || store.Sessions.Marks.Count == 0) && (_scopeStart is null || ActiveSession() is { Open: true });
+
     /// <summary>Changes whenever what is on show does, so a page can tell it is out of date.</summary>
     public string Key => $"{Day.DayNumber}|{(_wholeDay ? "whole" : _scopeStart?.Ticks.ToString() ?? "auto")}|{store.Sessions.Marks.Count}";
 
@@ -120,6 +123,11 @@ internal sealed class SessionScope(LootStore store)
             var mi = new MenuItem { Header = header, IsCheckable = false, IsChecked = check, IsEnabled = enabled };
             mi.Click += (_, _) => click();
             return mi;
+        }
+        if (Day != Today)
+        {
+            menu.Items.Add(Item("Back to today (current session)", () => Reset()));
+            menu.Items.Add(new Separator());
         }
         foreach (var s in store.Sessions.All.Reverse())
         {

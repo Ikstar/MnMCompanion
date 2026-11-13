@@ -3,12 +3,13 @@
   <!-- Companion: who looted what, read from the game's own ledger files. Reads files only; it never touches the game. -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>MnMCompanion</RootNamespace>
     <AssemblyName>MnMCompanion</AssemblyName>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Version>0.4.8</Version>
     <!-- the exe's ProductVersion is exactly <Version>: the code signing policy checks it, and the SDK would add "+<commit>" -->
@@ -29,6 +30,7 @@
 
   <!-- The change log travels inside the program: the "what's new" window shows this version's entry without asking the network -->
   <ItemGroup>
+    <Resource Include="app.ico" />
     <EmbeddedResource Include="..\..\CHANGELOG.md" LogicalName="CHANGELOG.md" />
   </ItemGroup>
 

@@ -7,6 +7,17 @@ namespace MnMCompanion;
 /// <summary>Where a window sits; NaN Left/Top = not placed yet.</summary>
 public sealed record Bounds(double Left, double Top, double Width, double Height);
 
+/// <summary>One tab's own window, as kept in <c>settings.json</c>: whether it is out, where it sits, its compact height, its text size, its pin, and whether it is compact.</summary>
+public sealed record DetachedTabState
+{
+    public bool Open { get; set; }
+    public Bounds? Bounds { get; set; }
+    public double? CompactHeight { get; set; }
+    public int Scale { get; set; } = UiScale.Default;
+    public bool OnTop { get; set; } = true;
+    public bool Compact { get; set; }
+}
+
 /// <summary>
 /// What the app remembers between runs, in <c>%LOCALAPPDATA%\MnMCompanion\settings.json</c>: which character, the ledger folder
 /// when it isn't in the default place, the panel's tab, and where the windows were. It holds nothing from the game.
@@ -68,6 +79,12 @@ public sealed class Settings
     /// <summary>The timers window's place, and whether it was open when the app closed (it comes back the same way).</summary>
     public Bounds? Timers { get; set; }
     public bool TimersOpen { get; set; }
+
+    /// <summary>Each window's text size as a percent of normal (<see cref="UiScale.Presets"/>), and any tabs taken out of the main window into their own windows.</summary>
+    public int PanelScale { get; set; } = UiScale.Default;
+    public int BreakdownScale { get; set; } = UiScale.Default;
+    public int TimersScale { get; set; } = UiScale.Default;
+    public Dictionary<string, DetachedTabState> DetachedTabs { get; set; } = [];
 
     /// <summary>The timers window's own pin (on top of the game or not; off until the player pins it) and how solid its background is, in percent (see <c>TimerLook</c>; 100 is no fading).</summary>
     public bool TimersOnTop { get; set; }
@@ -159,25 +176,127 @@ public sealed class Settings
     [System.Text.Json.Serialization.JsonIgnore]
     public bool ReadOnly { get; set; }
 
+    /// <summary>What went wrong reading <c>settings.json</c> when the program started (shown by <c>--diagnose</c>); null when all was well.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? LoadNote { get; private set; }
+
+    private System.Windows.Threading.DispatcherTimer? _saveSoon;
+
     public static string Folder => AppFolder.Folder;
 
     private static string FilePath => Path.Combine(Folder, "settings.json");
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
+    /// <summary>Brings scales, window bounds, and detached tabs into valid form after reading <c>settings.json</c>.</summary>
+    public void Normalize()
+    {
+        PanelScale = UiScale.Nearest(PanelScale);
+        BreakdownScale = UiScale.Nearest(BreakdownScale);
+        TimersScale = UiScale.Nearest(TimersScale);
+
+        Panel = ValidBounds(Panel);
+        Breakdown = ValidBounds(Breakdown);
+        Timers = ValidBounds(Timers);
+
+        var rawSlots = new Dictionary<string, TabSlot>(StringComparer.Ordinal);
+        var sources = new Dictionary<string, DetachedTabState>(StringComparer.OrdinalIgnoreCase);
+        if (DetachedTabs is not null)
+        {
+            foreach (var kv in DetachedTabs.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                if (kv.Key is null || kv.Value is null) continue;
+                rawSlots[kv.Key] = new TabSlot(kv.Key, kv.Value.Open, kv.Value.Scale, kv.Value.OnTop, kv.Value.Compact);
+                if (TabDockPolicy.IsKnownPage(kv.Key, out var canonical)
+                    && (!sources.TryGetValue(canonical, out var kept) || (!kept.Open && kv.Value.Open)))
+                {
+                    sources[canonical] = kv.Value;
+                }
+            }
+        }
+
+        var norm = TabDockPolicy.Normalize(MiniPage, rawSlots);
+        MiniPage = norm.ActiveDockedPage;
+
+        var rebuilt = new Dictionary<string, DetachedTabState>(norm.Tabs.Count, StringComparer.Ordinal);
+        foreach (var (canonical, slot) in norm.Tabs)
+        {
+            sources.TryGetValue(canonical, out var src);
+            rebuilt[canonical] = new DetachedTabState
+            {
+                Open = slot.Open,
+                Bounds = ValidBounds(src?.Bounds),
+                CompactHeight = ValidDimension(src?.CompactHeight),
+                Scale = slot.Scale,
+                OnTop = slot.OnTop,
+                Compact = slot.Compact,
+            };
+        }
+        DetachedTabs = rebuilt;
+    }
+
     public static Settings Load()
     {
         try
         {
-            if (File.Exists(FilePath) && JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath), Json) is { } s) return s;
+            if (File.Exists(FilePath) && JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath), Json) is { } loaded)
+            {
+                loaded.Normalize();
+                return loaded;
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
-        return new Settings { FreshInstall = !File.Exists(FilePath) };
+        catch (JsonException)
+        {
+            try { File.Copy(FilePath, FilePath + ".corrupt", overwrite: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            var s = new Settings { LoadNote = "settings.json was unreadable (backed up to settings.json.corrupt)" };
+            s.Normalize();
+            return s;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        var fresh = new Settings { FreshInstall = !File.Exists(FilePath) };
+        fresh.Normalize();
+        return fresh;
+    }
+
+    /// <summary>Queues a write in a second on the UI thread, coalescing rapid window moves or scale changes into one write.</summary>
+    public void SaveSoon()
+    {
+        if (ReadOnly) return;
+        if (System.Windows.Application.Current?.Dispatcher is not { } dispatcher)
+        {
+            Save();
+            return;
+        }
+        if (_saveSoon is null)
+        {
+            _saveSoon = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background, dispatcher)
+            {
+                Interval = TimeSpan.FromSeconds(1),
+            };
+            _saveSoon.Tick += (_, _) =>
+            {
+                _saveSoon.Stop();
+                Save();
+            };
+        }
+        _saveSoon.Stop();
+        _saveSoon.Start();
+    }
+
+    /// <summary>Writes any queued <see cref="SaveSoon"/> change now; does nothing when nothing is waiting.</summary>
+    public void FlushSave()
+    {
+        if (_saveSoon is not { IsEnabled: true }) return;
+        _saveSoon.Stop();
+        Save();
     }
 
     public void Save()
     {
+        if (_saveSoon is { IsEnabled: true }) _saveSoon.Stop();
         if (ReadOnly) return;
+        SanitizeGeometry();
         try
         {
             Directory.CreateDirectory(Folder);
@@ -187,4 +306,26 @@ public sealed class Settings
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
+
+    private void SanitizeGeometry()
+    {
+        Panel = ValidBounds(Panel);
+        Breakdown = ValidBounds(Breakdown);
+        Timers = ValidBounds(Timers);
+        if (DetachedTabs is null) return;
+        foreach (var state in DetachedTabs.Values)
+        {
+            if (state is null) continue;
+            state.Bounds = ValidBounds(state.Bounds);
+            state.CompactHeight = ValidDimension(state.CompactHeight);
+        }
+    }
+
+    private static Bounds? ValidBounds(Bounds? b) =>
+        b is not null && double.IsFinite(b.Left) && double.IsFinite(b.Top) && double.IsFinite(b.Width) && double.IsFinite(b.Height) && b.Width > 0 && b.Height > 0
+            ? b
+            : null;
+
+    private static double? ValidDimension(double? value) =>
+        value is { } v && double.IsFinite(v) && v > 0 ? v : null;
 }

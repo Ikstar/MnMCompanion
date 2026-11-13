@@ -33,7 +33,7 @@ internal sealed class MarketPanel : Border, IMiniPage
     private static readonly (string Key, string Label)[] Sorts = [("Active", "Most active"), ("Name", "Name"), ("PriceDown", "Price, high first"), ("PriceUp", "Price, low first"), ("Newest", "Newest")];
 
     private readonly Settings _settings;
-    private readonly TextBlock _status;
+    private Action<string> _say = _ => { };
     private readonly string? _file;
     private readonly LootStore _store;
     private readonly SessionScope _session;
@@ -73,12 +73,11 @@ internal sealed class MarketPanel : Border, IMiniPage
     private double? _restoreOffset;
 
     /// <param name="file">A feed to read instead of the kept book and the site (for a picture or a test); null for the real thing.</param>
-    public MarketPanel(LootStore store, SessionScope session, Settings settings, TextBlock status, string? file = null)
+    public MarketPanel(LootStore store, SessionScope session, Settings settings, string? file = null)
     {
         _store = store;
         _session = session;
         _settings = settings;
-        _status = status;
         _file = file;
         _kind = Enum.TryParse<MarketKind>(settings.MarketKind, out var k) ? k : null;
         _sort = Sorts.Any(s => s.Key == settings.MarketSort) ? settings.MarketSort! : "Active";
@@ -163,7 +162,13 @@ internal sealed class MarketPanel : Border, IMiniPage
 
     public bool NeedsHistory => false;
 
-    public void Say(string text) => _status.Text = text;
+    public bool SupportsCompact => false;
+
+    public void SetCompact(bool compact) { }
+
+    public void BindStatus(Action<string> say) { _say = say ?? (_ => { }); }
+
+    public void Say(string text) => _say(text);
 
     public void Refresh()
     {
@@ -262,7 +267,7 @@ internal sealed class MarketPanel : Border, IMiniPage
         var plan = MarketRefresh.Decide(DateTime.UtcNow, _book?.GeneratedAt, _meta, manual);
         if (plan.Step != MarketStep.Ask)
         {
-            if (manual) _status.Text = plan.Step == MarketStep.Fresh ? "The feed on this PC is the current one; the site publishes every six hours." : plan.Why;
+            if (manual) _say(plan.Step == MarketStep.Fresh ? "The feed on this PC is the current one; the site publishes every six hours." : plan.Why);
             return;
         }
         _fetching = true;
@@ -279,7 +284,7 @@ internal sealed class MarketPanel : Border, IMiniPage
             {
                 _meta.CheckedUtc = now;
                 _meta.NotBeforeUtc = null;
-                if (manual) _status.Text = "mnm-db.com hasn't published a newer feed yet.";
+                if (manual) _say("mnm-db.com hasn't published a newer feed yet.");
             }
             else if (result.Ok)
             {
@@ -295,8 +300,8 @@ internal sealed class MarketPanel : Border, IMiniPage
                     _meta.ETag = result.ETag;
                     _meta.CheckedUtc = now;
                     _meta.NotBeforeUtc = null;
-                    _status.Text = merged.Touched == 0 ? "The feed is the one already on this PC."
-                        : $"Loaded the feed: {merged.Added:N0} new {(merged.Added == 1 ? "price" : "prices")}, {merged.Changed:N0} changed.";
+                    _say(merged.Touched == 0 ? "The feed is the one already on this PC."
+                        : $"Loaded the feed: {merged.Added:N0} new {(merged.Added == 1 ? "price" : "prices")}, {merged.Changed:N0} changed.");
                 }
             }
             else
@@ -574,7 +579,7 @@ internal sealed class MarketPanel : Border, IMiniPage
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(-3, 8, 0, 0) };
         var copy = SmallButton("Copy price check", "Copy the item's prices as a line of text, to paste into chat");
-        copy.Click += (_, e) => { e.Handled = true; _status.Text = ClipboardText.Copy(PriceCheck(item)) ? $"Copied the price check for {item.Name}." : "Couldn't use the clipboard just now."; };
+        copy.Click += (_, e) => { e.Handled = true; _say(ClipboardText.Copy(PriceCheck(item)) ? $"Copied the price check for {item.Name}." : "Couldn't use the clipboard just now."); };
         buttons.Children.Add(copy);
         var open = SmallButton("Open on mnm-db.com", "The site's own page for this item's listings, in your browser");
         open.Click += (_, e) => { e.Handled = true; OpenSite(MarketSite.ItemUrl(item.Name)); };

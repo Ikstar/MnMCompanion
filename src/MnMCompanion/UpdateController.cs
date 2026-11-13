@@ -35,6 +35,9 @@ internal sealed class UpdateController : IDisposable
 
     public event Action? Changed;
 
+    /// <summary>Fired right before shutting down into a newly installed version.</summary>
+    public event Action? Restarting;
+
     public UpdateState State { get; private set; } = UpdateState.Idle;
     public UpdateOffer? Offer { get; private set; }
 
@@ -161,6 +164,7 @@ internal sealed class UpdateController : IDisposable
             Set(UpdateState.Installing, "Installing and restarting…");
             // --updated: the new program waits for this one to exit before it takes the timers' keys
             UpdateService.Apply(file, _exe!, exe => Process.Start(new ProcessStartInfo(exe, "--updated") { UseShellExecute = true }) is not null);
+            Restarting?.Invoke();
             Application.Current.Shutdown();
         }
         catch (UpdateException ex)

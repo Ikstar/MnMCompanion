@@ -40,7 +40,14 @@ internal sealed class LootPanel : Border, IMiniPage
     private readonly Button _scope = new() { Style = (Style)Ui.Theme["TextButton"], HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(9, 4, 9, 4) };
     private readonly TextBox _filter = new() { Style = (Style)Ui.Theme["Field"], Margin = new Thickness(0, 6, 0, 0), ToolTip = "Show only loot with this looter, item or corpse in it", Visibility = Visibility.Collapsed };
     private readonly StackPanel _body = new() { Margin = new Thickness(0, 6, 0, 0) };
-    private readonly TextBlock _status = new() { FontSize = 10, Foreground = Palette.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 8, 0), TextTrimming = TextTrimming.CharacterEllipsis };
+    // The full top (the session header, the tabs and the filter), and the compact headline shown instead of it: your coin split and the group's total
+    private readonly StackPanel _headerStack = new();
+    private readonly Grid _compactBar = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 2) };
+    private readonly TextBlock _compactOurs = Figure(), _compactOursNote = Note(), _compactTotal = Figure(), _compactTotalNote = Note();
+    // Where the status line goes (what was copied, what's unpriced): the bottom bar of whichever window holds the page
+    private Action<string> _say = _ => { };
+    private string _said = "";
+    private bool _compact;
 
     private readonly SessionScope _session;
     private string _view;
@@ -77,10 +84,13 @@ internal sealed class LootPanel : Border, IMiniPage
         totalsRow.Children.Add(_totalBlock);
         var header = SessionHeader.Build(_session, _title, _sub, null, null, _scope, totalsRow, _copyHost);
 
+        _headerStack.Children.Add(header);
+        _headerStack.Children.Add(tabBar);
+        _headerStack.Children.Add(_filter);
+        BuildCompactBar();
         var stack = new StackPanel();
-        stack.Children.Add(header);
-        stack.Children.Add(tabBar);
-        stack.Children.Add(_filter);
+        stack.Children.Add(_headerStack);
+        stack.Children.Add(_compactBar);
         var root = new DockPanel();
         DockPanel.SetDock(stack, Dock.Top);
         root.Children.Add(stack);
@@ -118,11 +128,45 @@ internal sealed class LootPanel : Border, IMiniPage
         return block;
     }
 
+    /// <summary>
+    /// The compact headline: OURS (your coin split, a click copies the coin line like the full figures) at the left and TOTAL (the group's coin and
+    /// what its items are worth to a vendor) at the right.
+    /// </summary>
+    private void BuildCompactBar()
+    {
+        _compactBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _compactBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        _compactOurs.Cursor = Cursors.Hand;
+        _compactOurs.MouseLeftButtonUp += (_, _) => CopyCoinLine();
+        var ours = new StackPanel { Margin = new Thickness(0, 0, 6, 0) };
+        ours.Children.Add(new TextBlock { Text = "OURS", FontSize = 9, FontWeight = FontWeights.SemiBold, Foreground = Palette.Muted });
+        ours.Children.Add(_compactOurs);
+        ours.Children.Add(_compactOursNote);
+        _compactBar.Children.Add(ours);
+
+        _compactTotal.HorizontalAlignment = HorizontalAlignment.Right;
+        _compactTotalNote.HorizontalAlignment = HorizontalAlignment.Right;
+        var total = new StackPanel { Margin = new Thickness(6, 0, 0, 0) };
+        total.Children.Add(new TextBlock { Text = "TOTAL", FontSize = 9, FontWeight = FontWeights.SemiBold, Foreground = Palette.Muted, HorizontalAlignment = HorizontalAlignment.Right });
+        total.Children.Add(_compactTotal);
+        total.Children.Add(_compactTotalNote);
+        Grid.SetColumn(total, 1);
+        _compactBar.Children.Add(total);
+    }
+
     /// <summary>Puts the coin line (the group's coin, your split and your share of it) on the clipboard and says so in the status line.</summary>
     private void CopyCoinLine()
     {
         if (_coinLine.Length == 0) return;
-        _status.Text = ClipboardText.Copy(_coinLine) ? "Copied the coin line to the clipboard." : "The clipboard is busy: try again.";
+        Report(ClipboardText.Copy(_coinLine) ? "Copied the coin line to the clipboard." : "The clipboard is busy: try again.");
+    }
+
+    /// <summary>Shows a line in the status bar of the window that holds the page.</summary>
+    private void Report(string text)
+    {
+        _said = text;
+        _say(text);
     }
 
     /// <summary>An icon button whose tooltip, in the app's dark style, names the action in bold and says what it does under it.</summary>
@@ -147,8 +191,24 @@ internal sealed class LootPanel : Border, IMiniPage
 
     public void Tick() { }
 
-    /// <summary>The status line (what was copied, what's unpriced). The window puts it in its bottom bar.</summary>
-    public TextBlock StatusLine => _status;
+    public bool SupportsCompact => true;
+
+    /// <summary>Where the status line (what was copied, what's unpriced) goes: the bottom bar of the window that holds the page.</summary>
+    public void BindStatus(Action<string> say)
+    {
+        _say = say ?? (_ => { });
+        if (IsVisible) _say(_said);
+    }
+
+    /// <summary>Switches between the full page and the compact one (your coin split, the group's total and the three items worth most).</summary>
+    public void SetCompact(bool compact)
+    {
+        if (_compact == compact) return;
+        _compact = compact;
+        _headerStack.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        _compactBar.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        Refresh();
+    }
 
     private static DateOnly Today => SessionScope.Today;
     private DateOnly Day => _session.Day;
@@ -198,19 +258,28 @@ internal sealed class LootPanel : Border, IMiniPage
               (ours.EstimatedShares > 0 ? Environment.NewLine + $"The ledger doesn't say what you were handed of the {ours.EstimatedShares:N0} purses you looted in a group, so those shares are estimated (~) from what you got of other players' purses." : "")
             : "Nothing has reached you yet in this view: no coin and no items.";
         _oursBlock.ToolTip += Environment.NewLine + Click + _coinLine;
+        const string Unrecorded = "The game's ledger can't record the loot of a monster with an apostrophe in its name (Skri'Var, Mur'Hua…): it writes no item rows for those corpses and doesn't name the monster, only the coin. Companion can't show their items.";
+        if (d.Unrecorded > 0) _totalBlock.ToolTip += Environment.NewLine + Unrecorded;
+        _compactOurs.Text = mine ? (ours.EstimatedShares > 0 ? "~" : "") + LootSummary.Coin(ours.Copper) : "—";
+        _compactOurs.ToolTip = _oursBlock.ToolTip;
+        _compactOursNote.Text = mine ? $"your coin · items {LootSummary.Worth(ours.ItemValue, ours.Estimated > 0, ours.Unrecorded > 0)}" : "nothing of yours yet";
+        _compactTotal.Text = LootSummary.Coin(totals.Copper);
+        _compactTotal.ToolTip = _totalBlock.ToolTip;
+        _compactTotalNote.Text = $"coin · items worth {LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0 || d.Unrecorded > 0)}";
         var first = all.Count > 0 ? all.Min(e => e.Time) : (DateTime?)null;
         // Trimmed rather than pushing the copy buttons off the row when the label is long
         _scope.Content = new TextBlock { Text = (session is null ? "Whole day" : session.Open ? "This session: " + session.Label(first) : "Session " + session.Label(first)) + "  ▾", TextTrimming = TextTrimming.CharacterEllipsis };
         _scope.ToolTip = "Which part of the day to show: this session, an earlier one, or the whole day. A new session archives what has been looted so far.";
 
-        if (IsVisible) _status.Text = _store.Selected is null ? ""
+        // The compact page keeps the bar quiet (so a small window shows no status bar at all) unless something went wrong or the player just did something
+        if (IsVisible) Report(_store.Selected is null ? ""
             : _store.Error is { } error ? $"Can't read the ledger: {error}"
             : _note.Length > 0 ? _note
+            : _compact ? ""
             : d.Unrecorded > 0 ? $"{Plural(d.Unrecorded, "corpse")}: items missing from the ledger (names with an apostrophe)"
             : d.Unpriced > 0 ? $"{Plural(d.Unpriced, "item")} unpriced (+): sell one to price it"
-            : "";
+            : "");
         _note = "";
-        _status.ToolTip = d.Unrecorded > 0 ? "The game's ledger can't record the loot of a monster with an apostrophe in its name (Skri'Var, Mur'Hua…): it writes no item rows for those corpses and doesn't name the monster, only the coin. Companion can't show their items." : null;
 
         _filter.Visibility = _view == "Feed" ? Visibility.Visible : Visibility.Collapsed;
         _copyHost.Child = null;
@@ -230,6 +299,11 @@ internal sealed class LootPanel : Border, IMiniPage
         {
             _body.Children.Add(Line($"No ledger yet for {fresh.Character} on {fresh.ServerName}.", Palette.Text));
             _body.Children.Add(Line("The game writes one as this character loots, sells, levels up and so on; this window picks it up by itself.", Palette.Muted));
+            return;
+        }
+        if (_compact)
+        {
+            ShowCompact(d);
             return;
         }
         if (d.Events.Count == 0)
@@ -288,24 +362,38 @@ internal sealed class LootPanel : Border, IMiniPage
         }
     }
 
+    /// <summary>The compact page's rows: the three items worth most that anyone in the group looted (the filter doesn't apply).</summary>
+    private void ShowCompact(LootDay d)
+    {
+        if (d.ItemsWorth.Count == 0) { _body.Children.Add(Line("No items looted in this session yet.", Palette.Muted)); return; }
+        double max = Math.Max(1L, d.ItemsWorth.Count > 0 ? d.ItemsWorth[0].Total : 1L);
+        int rank = 0;
+        foreach (var i in d.ItemsWorth.Take(3))
+            _body.Children.Add(ItemRow(++rank, i, max));
+    }
+
     private void ShowItems(LootDay d)
     {
         if (d.ItemsWorth.Count == 0) { _body.Children.Add(Line("No items looted.", Palette.Muted)); return; }
         double top = Math.Max(1, d.ItemsWorth.Max(i => (double)i.Total));
         int rank = 0;
         foreach (var i in d.ItemsWorth.Take(60))
-        {
-            var takers = string.Join(", ", i.By.Take(2).Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who)) + (i.By.Count > 2 ? $" +{i.By.Count - 2}" : "");
-            var value = !i.Value.Known ? "—" : (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total);
-            var tip = (i.Value.Known
-                          ? $"{(i.Value.Estimated ? "about " : "")}{LootSummary.Coin(i.Value.Each)} each to a vendor ({SourceWord(i.Value.Source)})" + Environment.NewLine
-                          : "No known price: no vendor sale of it in your ledgers." + Environment.NewLine + "Sell one to a vendor and its price is learned." + Environment.NewLine)
-                      + string.Join(Environment.NewLine, i.By.Select(b => $"{b.Who}: {b.Count}"));
-            var item = i;
-            _body.Children.Add(Row(++rank, i.Count > 1 ? $"{i.Item} ×{i.Count}" : i.Item, takers, value, Palette.You, i.Total / top, tip, () => _openBreakdown(Day, null, ActiveSession()),
-                copy: () => LootSummary.ItemLine(item)));
-        }
+            _body.Children.Add(ItemRow(++rank, i, top));
         if (d.ItemsWorth.Count > 60) _body.Children.Add(Line($"{d.ItemsWorth.Count - 60} more kinds are in the full breakdown.", Palette.Muted));
+    }
+
+    /// <summary>One item's row on the Items tab (and the compact page): who looted it, what it is worth, and a button that copies its summary.</summary>
+    private FrameworkElement ItemRow(int rank, ItemWorth i, double top)
+    {
+        var takers = string.Join(", ", i.By.Take(2).Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who)) + (i.By.Count > 2 ? $" +{i.By.Count - 2}" : "");
+        var value = !i.Value.Known ? "—" : (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total);
+        var tip = (i.Value.Known
+                      ? $"{(i.Value.Estimated ? "about " : "")}{LootSummary.Coin(i.Value.Each)} each to a vendor ({SourceWord(i.Value.Source)})" + Environment.NewLine
+                      : "No known price: no vendor sale of it in your ledgers." + Environment.NewLine + "Sell one to a vendor and its price is learned." + Environment.NewLine)
+                  + string.Join(Environment.NewLine, i.By.Select(b => $"{b.Who}: {b.Count}"));
+        var item = i;
+        return Row(rank, i.Count > 1 ? $"{i.Item} ×{i.Count}" : i.Item, takers, value, Palette.You, i.Total / top, tip, () => _openBreakdown(Day, null, ActiveSession()),
+            copy: () => LootSummary.ItemLine(item));
     }
 
     private static string SourceWord(Loot.ValueSource s) => s switch
@@ -414,7 +502,7 @@ internal sealed class LootPanel : Border, IMiniPage
     private FrameworkElement CopyBar(string label, string what, Func<string> text)
     {
         var b = new Button { Content = label, Style = (Style)Ui.Theme["TextButton"], HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 0, 2), Padding = new Thickness(9, 3, 9, 3), ToolTip = "Copy " + what + " to the clipboard as text" };
-        b.Click += (_, _) => { Copy(text()); _status.Text = $"Copied {what} to the clipboard."; };
+        b.Click += (_, _) => { Copy(text()); Report($"Copied {what} to the clipboard."); };
         return b;
     }
 

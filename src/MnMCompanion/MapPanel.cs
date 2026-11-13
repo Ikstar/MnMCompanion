@@ -25,25 +25,33 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
     private readonly LootStore _store;
     private readonly SessionScope _session;
     private readonly Settings _settings;
-    private readonly TextBlock _status;
+    private Action<string> _say = _ => { };
+    private string _said = "";
 
     private readonly TextBlock _title = new() { FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = Palette.Text, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly TextBlock _sub = new() { FontSize = 11, Foreground = Palette.Muted, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly Button _open = new() { Style = (Style)Ui.Theme["TextButton"], Content = "Open in Atlas  ↗", Padding = new Thickness(9, 4, 9, 4), VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
-    private readonly WebView2 _web = new() { Visibility = Visibility.Collapsed, DefaultBackgroundColor = System.Drawing.Color.FromArgb(0x0F, 0x11, 0x15) };
+    // The web view is made when the map is first shown, and made afresh when its browser process dies ("Try again"): a faulted one can't be reused
+    private WebView2? _web;
+    private CoreWebView2? _core;
+    private Task? _starting;
+    private readonly Grid _mapGrid = new() { Margin = new Thickness(0, 8, 0, 0) };
     private readonly StackPanel _message = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8) };
 
     private string? _openUrl;
     private string? _shownUrl;
     private string _seen = "";
     private bool _ready, _failed;
+    // What to say while the web view can't show the map (with a "Try again" button)
+    private string _failTitle = "", _failMore = "";
+    // The page's zoom: the scale of the window holding it, so the map's labels grow with the rest of the window
+    private double _hostScale = 1.0;
 
-    public MapPanel(LootStore store, SessionScope session, Settings settings, TextBlock status)
+    public MapPanel(LootStore store, SessionScope session, Settings settings)
     {
         _store = store;
         _session = session;
         _settings = settings;
-        _status = status;
         Background = new SolidColorBrush(Color.FromRgb(0x0F, 0x11, 0x15));
         Padding = new Thickness(12, 10, 12, 8);
         _open.ToolTip = "Open this zone's page of the community atlas in your browser";
@@ -63,16 +71,14 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
             FontSize = 10, Foreground = Palette.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
         };
 
-        var map = new Grid { Margin = new Thickness(0, 8, 0, 0) };
-        map.Children.Add(_web);
-        map.Children.Add(_message);
+        _mapGrid.Children.Add(_message);
 
         var root = new DockPanel();
         DockPanel.SetDock(head, Dock.Top);
         DockPanel.SetDock(credit, Dock.Bottom);
         root.Children.Add(head);
         root.Children.Add(credit);
-        root.Children.Add(map);
+        root.Children.Add(_mapGrid);
         Child = root;
         session.Changed += () => { if (IsVisible) Refresh(); };
     }
@@ -83,7 +89,32 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
 
     public void RefreshNow() => Refresh();
 
-    public void Say(string text) => _status.Text = text;
+    public bool SupportsCompact => false;
+
+    public void SetCompact(bool compact) { }
+
+    public void BindStatus(Action<string> say)
+    {
+        _say = say ?? (_ => { });
+        if (IsVisible) _say(_said);
+    }
+
+    public void Say(string text)
+    {
+        _said = text;
+        _say(text);
+    }
+
+    /// <summary>Zooms the map with the window that holds it (1 to 2 times), so its labels stay in step with the rest of the window.</summary>
+    public void SetHostScale(double factor)
+    {
+        _hostScale = Math.Clamp(factor, 1.0, 2.0);
+        if (_ready && _web is not null && _settings.MapsOnline)
+        {
+            try { _web.ZoomFactor = _hostScale; }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
+        }
+    }
 
     private string Signature() => $"{_store.CurrentZone?.Zone}|{_store.SelectionKey}|{_session.Key}|{_store.Version}|{_settings.MapsOnline}";
 
@@ -95,7 +126,7 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
     public void Refresh()
     {
         _seen = Signature();
-        _status.Text = "";
+        Say("");
         _openUrl = null;
         _open.Visibility = Visibility.Collapsed;
         if (_store.Selected is null) { Note("No Monsters and Memories ledger found."); return; }
@@ -127,7 +158,7 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
     /// <summary>Replaces the map with a note (and, with <paramref name="more"/>, a second muted line).</summary>
     private void Note(string text, string? more = null)
     {
-        _web.Visibility = Visibility.Collapsed;
+        if (_web is not null) _web.Visibility = Visibility.Collapsed;
         _message.Visibility = Visibility.Visible;
         _message.Children.Clear();
         _message.Children.Add(LootPanel.Line(text, Palette.Text));
@@ -145,35 +176,101 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
         _message.Children.Add(buttons);
     }
 
+    /// <summary>The web view can't show the map just now: says why, with a button that starts it afresh.</summary>
+    private void ShowFailed()
+    {
+        Note(_failTitle, _failMore);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 10, 0, 0) };
+        buttons.Children.Add(LootPanel.TextAction("Try again", Retry));
+        if (_openUrl is not null) buttons.Children.Add(LootPanel.TextAction("Open it in my browser instead", () => OpenExternal(_openUrl)));
+        _message.Children.Add(buttons);
+    }
+
+    private void Fail(string title, string more)
+    {
+        _failTitle = title;
+        _failMore = more;
+        ShowFailed();
+    }
+
+    /// <summary>Throws away the web view (and whatever went wrong with it) and shows the map in a new one.</summary>
+    private void Retry()
+    {
+        ResetWeb();
+        _seen = "";
+        Refresh();
+    }
+
     // ------------------------------------------------------------------ the web view
+
+    /// <summary>The web view, made and put under the message the first time (and after <see cref="ResetWeb"/>).</summary>
+    private WebView2 EnsureWeb()
+    {
+        if (_web is not null) return _web;
+        _web = new WebView2 { Visibility = Visibility.Collapsed, DefaultBackgroundColor = System.Drawing.Color.FromArgb(0x0F, 0x11, 0x15) };
+        _mapGrid.Children.Insert(0, _web);
+        return _web;
+    }
+
+    /// <summary>Unhooks, removes and disposes the web view, so the next map shown starts a fresh one.</summary>
+    private void ResetWeb()
+    {
+        if (_core is not null)
+        {
+            try { _core.ProcessFailed -= OnProcessFailed; }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException) { }
+            _core = null;
+        }
+        if (_web is { } web)
+        {
+            _mapGrid.Children.Remove(web);
+            try { web.Dispose(); }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException) { }
+        }
+        _web = null;
+        _starting = null;
+        _ready = false;
+        _shownUrl = null;
+        _failed = false;
+    }
 
     private async Task ShowMapAsync(string url)
     {
+        if (_failed) { ShowFailed(); return; }
+        var view = EnsureWeb();
         try
         {
-            if (_failed) { Note("The map can't be shown in this window.", "Use “Open in Atlas” to see it in your browser."); return; }
             _message.Visibility = Visibility.Collapsed;
-            _web.Visibility = Visibility.Visible;
-            if (!_ready) await StartAsync();
+            view.Visibility = Visibility.Visible;
+            if (!_ready) await (_starting ??= StartAsync(view));
+            // Replaced (Try again, a crash, closing) while it was starting: the new one shows the map
+            if (!ReferenceEquals(view, _web) || !_ready) return;
             if (_shownUrl != url)
             {
                 _shownUrl = url;
-                _web.CoreWebView2.Navigate(url);
+                view.CoreWebView2.Navigate(url);
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            _failed = true;
-            Note("The map can't be shown in this window.", (ex is WebView2RuntimeNotFoundException ? "Windows' web view (Microsoft Edge WebView2) isn't installed. " : "") + "Use “Open in Atlas” to see it in your browser.");
+            if (!ReferenceEquals(view, _web)) return;
+            // One that never started is thrown away; one that did keeps going, and the next refresh asks for the page again
+            if (!_ready) ResetWeb(); else _shownUrl = null;
+            bool missing = ex is WebView2RuntimeNotFoundException;
+            // Without the web view installed, trying again by itself on every refresh is pointless: it waits for the button
+            if (missing) _failed = true;
+            Fail("The map can't be shown in this window.", (missing ? "Windows' web view (Microsoft Edge WebView2) isn't installed. " : "") + "Use “Open in Atlas” to see it in your browser.");
         }
     }
 
-    private async Task StartAsync()
+    private async Task StartAsync(WebView2 view)
     {
         // Its files (and the atlas's notes, which the atlas keeps in the browser) stay in this app's own folder (a test run's own, not the player's)
         var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(_store.StateRoot, "webview"));
-        await _web.EnsureCoreWebView2Async(env);
-        var web = _web.CoreWebView2;
+        if (!ReferenceEquals(view, _web)) return;
+        await view.EnsureCoreWebView2Async(env);
+        if (!ReferenceEquals(view, _web)) return;
+        var web = view.CoreWebView2;
         web.Settings.AreDevToolsEnabled = false;
         web.Settings.AreDefaultContextMenusEnabled = false;
         web.Settings.IsStatusBarEnabled = false;
@@ -191,7 +288,29 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
             e.Handled = true;
             OpenExternal(e.Uri);
         };
+        web.ProcessFailed += OnProcessFailed;
+        _core = web;
         _ready = true;
+        SetHostScale(_hostScale);
+    }
+
+    /// <summary>
+    /// The web view's browser or page process died or hung: the view can't be used again, so it is thrown away (after the event has returned) and the
+    /// player is offered a fresh one.
+    /// </summary>
+    private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, _core)) return;
+        if (e.ProcessFailedKind is not (CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited
+            or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)) return;
+        var core = _core;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!ReferenceEquals(core, _core)) return;
+            ResetWeb();
+            _failed = true;
+            Fail("The map stopped working.", "Windows' web view closed unexpectedly. Try again, or use “Open in Atlas” to see it in your browser.");
+        });
     }
 
     private static bool IsAtlas(string uri) => Uri.TryCreate(uri, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps && u.Host.Equals(AtlasHost, StringComparison.OrdinalIgnoreCase);
@@ -203,5 +322,17 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { }
     }
 
-    public void Dispose() => _web.Dispose();
+    public void Dispose()
+    {
+        if (_core is not null)
+        {
+            try { _core.ProcessFailed -= OnProcessFailed; }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException) { }
+            _core = null;
+        }
+        _web?.Dispose();
+        _web = null;
+        _starting = null;
+        _ready = false;
+    }
 }

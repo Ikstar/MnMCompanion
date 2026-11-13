@@ -12,14 +12,14 @@
 
 .EXAMPLE
   scripts\make-screenshots.ps1
-  scripts\make-screenshots.ps1 -Exe src\MnMCompanion\bin\Release\net10.0-windows\win-x64\MnMCompanion.exe
+  scripts\make-screenshots.ps1 -Exe src\MnMCompanion\bin\Release\net9.0-windows\win-x64\MnMCompanion.exe
   scripts\make-screenshots.ps1 -Recipes C:\path\to\tradeskills.json
 
   The Recipes pictures need a copy of the wiki's tradeskills list (the JSON at monstersandmemories.wiki/api/tradeskills, or the recipes.json Companion keeps
   in its own folder): the project doesn't carry one, so pass it with -Recipes, or those three pictures are left as they are.
 #>
 param(
-    [string]$Exe = (Join-Path $PSScriptRoot '..\src\MnMCompanion\bin\Debug\net10.0-windows\MnMCompanion.exe'),
+    [string]$Exe = (Join-Path $PSScriptRoot '..\src\MnMCompanion\bin\Debug\net9.0-windows\MnMCompanion.exe'),
     [string]$Out = (Join-Path $PSScriptRoot '..\docs\images'),
     [string]$Recipes = ''
 )

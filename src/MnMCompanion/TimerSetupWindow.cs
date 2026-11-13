@@ -43,12 +43,15 @@ internal sealed class TimerSetupWindow : Window
         BorderBrush = new SolidColorBrush(Color.FromArgb(0x80, 0x90, 0xA0, 0xB0));
         BorderThickness = new Thickness(1);
         Topmost = settings.OnTop;
-        Width = 660;
-        Height = 700;
+        // the timers' text size; no Owner here, as the timers window may never be shown (a picture of this window is drawn without it)
+        var s = UiScale.Factor(settings.TimersScale);
+        Width = 660 * s;
+        Height = 700 * s;
         MinWidth = 580;
         MinHeight = 420;
         UseLayoutRounding = true;
         ShowInTaskbar = true;
+        Ui.ApplyWindowIcon(this);
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
@@ -76,7 +79,8 @@ internal sealed class TimerSetupWindow : Window
         DockPanel.SetDock(title, Dock.Top);
         root.Children.Add(title);
         root.Children.Add(new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = body });
-        Content = root;
+        WindowScale.Attach(this, root, baseMinWidth: 580, baseMinHeight: 420, initialPercent: settings.TimersScale,
+            onChanged: p => { settings.TimersScale = p; settings.SaveSoon(); });
 
         _timers.BookReplaced += Rebuild;
         Closed += (_, _) => _timers.BookReplaced -= Rebuild;

@@ -22,10 +22,12 @@ namespace MnMCompanion;
 /// </summary>
 internal sealed class TimersWindow : Window
 {
+    private const double BaseMinWidth = 250, BaseMinHeight = 90, DefaultWidth = 340, DefaultHeight = 300;
     private static readonly Brush BarBack = Frozen(Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF));
     private static readonly Brush Amber = Palette.Gold;
 
     private readonly Settings _settings;
+    private readonly WindowScale _windowScale;
     private readonly Func<string?> _folder;
     private readonly Func<IReadOnlyList<LootedCorpse>>? _corpses;
     private readonly HotkeyHost? _hotkeys;
@@ -50,10 +52,9 @@ internal sealed class TimersWindow : Window
     private readonly TextBlock _corpseMore = new() { FontSize = 11, Foreground = Palette.Muted, Margin = new Thickness(2, 0, 0, 4), Visibility = Visibility.Collapsed };
     private readonly TextBlock _empty;
     private readonly TextBlock _message = new() { FontSize = 11, Foreground = Palette.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 6), Visibility = Visibility.Collapsed };
-    private DispatcherTimer? _saveSoon;
     private readonly TextBlock _caption;
     private readonly DispatcherTimer _keyWatch;
-    private bool _passing, _moving, _sizeMoveHooked, _keyUnreadable;
+    private bool _passing, _moving, _sizeMoveHooked, _keyUnreadable, _resetting;
 
     /// <summary>One timer's button in the strip: lit, with a stop square, while the timer runs; with a start arrow while it doesn't.</summary>
     private sealed class TimerButton
@@ -95,35 +96,74 @@ internal sealed class TimersWindow : Window
         BorderBrush = new SolidColorBrush(Color.FromArgb(0x80, 0x90, 0xA0, 0xB0));
         BorderThickness = new Thickness(1);
         Topmost = settings.TimersOnTop;
-        MinWidth = 250;
-        MinHeight = 110;
+        MinWidth = BaseMinWidth;
+        MinHeight = BaseMinHeight;
         UseLayoutRounding = true;
         ShowInTaskbar = false;
+        Ui.ApplyWindowIcon(this);
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
-        var b = settings.Timers ?? new Bounds(double.NaN, double.NaN, 320, 300);
-        Width = b.Width;
-        Height = b.Height;
-        var work = SystemParameters.WorkArea;
-        Left = double.IsNaN(b.Left) ? work.Right - Width - 520 : b.Left;
-        Top = double.IsNaN(b.Top) ? work.Top + 80 : b.Top;
-        KeepOnScreen();
+        var factor = UiScale.Factor(settings.TimersScale);
+        var wa = SystemParameters.WorkArea;
+        var primaryWork = new WorkArea(wa.Left, wa.Top, wa.Width, wa.Height);
+        if (settings.Timers is { } b && b.Width > 0 && b.Height > 0)
+        {
+            Width = b.Width;
+            Height = b.Height;
+            Left = double.IsFinite(b.Left) ? b.Left : primaryWork.Right - Width - 520;
+            Top = double.IsFinite(b.Top) ? b.Top : primaryWork.Top + 80;
+        }
+        else
+        {
+            Width = DefaultWidth * factor;
+            Height = DefaultHeight * factor;
+            Left = primaryWork.Right - Width - 520;
+            Top = primaryWork.Top + 80;
+        }
+        if (!WindowScale.GetOffScreenSnapshot(this))
+        {
+            var targetWork = WindowScale.WorkAreaForRect(Left, Top, Width, Height, this);
+            var box = UiScale.ClampToWorkArea(Left, Top, Width, Height, BaseMinWidth, BaseMinHeight, settings.TimersScale, targetWork);
+            (Left, Top, Width, Height) = (box.Left, box.Top, box.Width, box.Height);
+        }
+
+        var root = new DockPanel();
+        _windowScale = WindowScale.Attach(this, root, baseMinWidth: BaseMinWidth, baseMinHeight: BaseMinHeight,
+            initialPercent: _settings.TimersScale,
+            onChanged: p =>
+            {
+                _settings.TimersScale = p;
+                ShowToolLabels();
+                _settings.SaveSoon();
+            });
 
         var close = TitleButton("\uE711", "Hide this window. Timers keep running and keep playing their sounds.", HideWindow);
         _pin = TitleButton("\uE718", "Keep this window on top of the game", TogglePin);
+        var scaleButton = _windowScale.MakeTitleButton((Style)Ui.Theme["IconButton"]);
+        scaleButton.Height = 24;
+        scaleButton.Foreground = new SolidColorBrush(Color.FromRgb(0xC8, 0xD4, 0xE0));
+        scaleButton.VerticalAlignment = VerticalAlignment.Center;
+        System.Windows.Automation.AutomationProperties.SetName(scaleButton, "Text size");
         var opacity = OpacityButton();
         _buttonsToggle = ToolButton("\uE80A", null, "Buttons", "Show each timer as a button across the top: click one to start it, click it again to stop it", ToggleButtons);
-        var caption = _caption = new TextBlock { Text = "Timers", Foreground = new SolidColorBrush(Color.FromRgb(0xE6, 0xEA, 0xEE)), FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 6, 0) };
+        var caption = _caption = new TextBlock
+        {
+            Text = "Timers", Foreground = new SolidColorBrush(Color.FromRgb(0xE6, 0xEA, 0xEE)), FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 6, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
         var title = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x10, 0x14, 0x18)), Height = 30, Cursor = Cursors.SizeAll, LastChildFill = false };
         _title = title;
         DockPanel.SetDock(close, Dock.Right);
         DockPanel.SetDock(_pin, Dock.Right);
+        DockPanel.SetDock(scaleButton, Dock.Right);
         DockPanel.SetDock(opacity, Dock.Right);
         DockPanel.SetDock(_buttonsToggle, Dock.Right);
         DockPanel.SetDock(caption, Dock.Left);
         title.Children.Add(close);
         title.Children.Add(_pin);
+        title.Children.Add(scaleButton);
         title.Children.Add(opacity);
         title.Children.Add(_buttonsToggle);
         title.Children.Add(caption);
@@ -146,7 +186,6 @@ internal sealed class TimersWindow : Window
 
         var bottom = BuildBottom();
         _bottom = (Border)bottom;
-        var root = new DockPanel();
         DockPanel.SetDock(title, Dock.Top);
         DockPanel.SetDock(_strip, Dock.Top);
         DockPanel.SetDock(bottom, Dock.Bottom);
@@ -155,7 +194,6 @@ internal sealed class TimersWindow : Window
         root.Children.Add(_strip);
         root.Children.Add(bottom);
         root.Children.Add(scroll);
-        Content = root;
         ApplyLook();
 
         if (!settings.ReadOnly) _hotkeys = MakeHotkeys();
@@ -233,7 +271,7 @@ internal sealed class TimersWindow : Window
 
     private void ShowToolLabels()
     {
-        var visibility = ActualWidth >= 290 ? Visibility.Visible : Visibility.Collapsed;
+        var visibility = (ActualWidth / _windowScale.Factor) >= 330 ? Visibility.Visible : Visibility.Collapsed;
         foreach (var label in _toolLabels) label.Visibility = visibility;
     }
 
@@ -434,10 +472,15 @@ internal sealed class TimersWindow : Window
             open.Activate();
             return;
         }
-        _setup = new TimerSetupWindow(this, _settings);
+        _setup = new TimerSetupWindow(this, _settings)
+        {
+            WindowStartupLocation = IsVisible ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
+        };
+        if (IsVisible) _setup.Owner = this;
         _setup.Closed += (_, _) =>
         {
             _setup = null;
+            if (_windowScale.Percent != _settings.TimersScale) _windowScale.SetScale(_settings.TimersScale);
             ResumeKeys();
         };
         SuspendKeys();
@@ -762,21 +805,44 @@ internal sealed class TimersWindow : Window
         return brush;
     }
 
-    private void Remember()
+    /// <summary>Returns this window to normal text size and places its default bounds on the main monitor.</summary>
+    public void ResetScaleAndBounds()
     {
-        if (WindowState != WindowState.Normal) return;
-        _settings.Timers = new Bounds(Left, Top, Width, Height);
-        _saveSoon ??= new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => { _saveSoon!.Stop(); _settings.Save(); }, Dispatcher);
-        _saveSoon.Stop();
-        _saveSoon.Start();
+        _resetting = true;
+        try
+        {
+            _settings.Timers = null;
+            _settings.TimersScale = UiScale.Default;
+            if (WindowState != WindowState.Normal) WindowState = WindowState.Normal;
+            _windowScale.SetScale(UiScale.Default, resizeOuter: false);
+            var wa = SystemParameters.WorkArea;
+            var work = new WorkArea(wa.Left, wa.Top, wa.Width, wa.Height);
+            var box = UiScale.ClampToWorkArea(work.Right - DefaultWidth - 520, work.Top + 80, DefaultWidth, DefaultHeight, BaseMinWidth, BaseMinHeight, UiScale.Default, work);
+            MaxWidth = work.Width;
+            MaxHeight = work.Height;
+            MinWidth = box.MinWidth;
+            MinHeight = box.MinHeight;
+            Width = box.Width;
+            Height = box.Height;
+            Left = box.Left;
+            Top = box.Top;
+            if (Math.Abs(Left - box.Left) > 0.5) Left = box.Left;
+            _settings.Timers = null;
+            _settings.TimersScale = UiScale.Default;
+            ShowToolLabels();
+            _settings.SaveSoon();
+        }
+        finally
+        {
+            if (IsLoaded && IsVisible) Dispatcher.BeginInvoke(() => _resetting = false, DispatcherPriority.Loaded);
+            else _resetting = false;
+        }
     }
 
-    /// <summary>Saved on another monitor layout: pull it back onto the desktop.</summary>
-    private void KeepOnScreen()
+    private void Remember()
     {
-        double l = SystemParameters.VirtualScreenLeft, t = SystemParameters.VirtualScreenTop;
-        double r = l + SystemParameters.VirtualScreenWidth, bottom = t + SystemParameters.VirtualScreenHeight;
-        Left = Math.Clamp(Left, l, Math.Max(l, r - 120));
-        Top = Math.Clamp(Top, t, Math.Max(t, bottom - 60));
+        if (!IsLoaded || !IsVisible || _resetting || WindowState != WindowState.Normal || WindowScale.GetOffScreenSnapshot(this)) return;
+        _settings.Timers = new Bounds(Left, Top, Width, Height);
+        _settings.SaveSoon();
     }
 }

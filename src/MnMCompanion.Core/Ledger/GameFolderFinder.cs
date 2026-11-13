@@ -145,6 +145,8 @@ public static partial class GameFolderFinder
         Line();
         Line($"drawing a test window: {f.WindowTest}");
         Line($"the map's web view: {f.WebView}");
+        if (!string.IsNullOrWhiteSpace(f.Display)) Line($"display: {f.Display}");
+        if (!string.IsNullOrWhiteSpace(f.Windows)) Line($"windows: {f.Windows}");
         Line($"Companion's own files: {f.OwnFolder}");
         return sb.ToString();
     }
@@ -156,4 +158,4 @@ public static partial class GameFolderFinder
 public sealed record DiagnoseFacts(
     string Version, string System, string Runtime, bool UnderWine, string WineSigns, IReadOnlyList<(string Name, string? Value)> Environment, string? LinuxRoot,
     string RootInUse, string DefaultRoot, int DefaultCharacters, string? ChosenRoot, int ChosenCharacters, IReadOnlyList<FoundGameFolder> Found,
-    string WindowTest, string WebView, string OwnFolder);
+    string WindowTest, string WebView, string OwnFolder, string? Display = null, string? Windows = null);

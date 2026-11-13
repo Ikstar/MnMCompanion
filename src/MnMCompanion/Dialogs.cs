@@ -21,10 +21,17 @@ internal static class Dialogs
         window.ResizeMode = ResizeMode.NoResize;
         window.WindowStartupLocation = WindowStartupLocation.CenterOwner;
         window.ShowInTaskbar = true;
+        Ui.ApplyWindowIcon(window);
         window.Background = (Brush)Ui.Theme["Window"];
         window.Foreground = Palette.Text;
         window.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
-        window.SourceInitialized += (_, _) => DarkTitleBar(window);
+        window.SourceInitialized += (_, _) =>
+        {
+            DarkTitleBar(window);
+            // by now the content is set: draw it at the scale of the window that opened the dialog
+            var percent = window.Owner is not null ? WindowScale.ScaleOf(window.Owner) : UiScale.Default;
+            WindowScale.AttachDialog(window, width, baseMaxHeight: 780, percent);
+        };
     }
 
     public static TextBlock Title(string text) => new()
