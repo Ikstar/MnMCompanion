@@ -26,7 +26,8 @@ internal sealed class WindowScale
 
     private readonly Window _window;
     private readonly Settings _settings;
-    private readonly double _minWidth, _minHeight, _maxHeight;
+    private readonly double _minWidth, _maxHeight;
+    private double _minHeight;
     private int _wheel;
 
     /// <summary>The kind of window this is (the name in <see cref="Settings.WindowScales"/>).</summary>
@@ -36,6 +37,9 @@ internal sealed class WindowScale
     public string Name { get; }
 
     public int Percent { get; private set; }
+
+    /// <summary>True while <see cref="Set"/> is resizing the window for a scale change (not a manual edge drag).</summary>
+    public bool IsScaling { get; private set; }
 
     /// <summary>The size changed.</summary>
     public event Action? Changed;
@@ -122,6 +126,13 @@ internal sealed class WindowScale
         if (!double.IsInfinity(_maxHeight)) _window.MaxHeight = _maxHeight * factor;
     }
 
+    /// <summary>Changes the window's unscaled smallest height (e.g. between full and mini view) and applies it now.</summary>
+    public void SetMinHeight(double minHeight)
+    {
+        _minHeight = minHeight;
+        _window.MinHeight = _minHeight * UiScale.Factor(Percent);
+    }
+
     /// <summary>Sets the size. The window grows or shrinks to match (it stays on screen), the size is remembered, and <see cref="Changed"/> is raised.</summary>
     public void Set(int percent)
     {
@@ -129,12 +140,20 @@ internal sealed class WindowScale
         if (percent == Percent) return;
         var from = Percent;
         Percent = percent;
-        Apply();
-        if (_window.WindowState == WindowState.Normal && _window.IsLoaded)
+        IsScaling = true;
+        try
         {
-            if (_window.SizeToContent is not (SizeToContent.Width or SizeToContent.WidthAndHeight)) _window.Width = UiScale.Resized(_window.ActualWidth, from, percent);
-            if (_window.SizeToContent is not (SizeToContent.Height or SizeToContent.WidthAndHeight)) _window.Height = UiScale.Resized(_window.ActualHeight, from, percent);
-            KeepOnScreen();
+            Apply();
+            if (_window.WindowState == WindowState.Normal && _window.IsLoaded)
+            {
+                if (_window.SizeToContent is not (SizeToContent.Width or SizeToContent.WidthAndHeight)) _window.Width = UiScale.Resized(_window.ActualWidth, from, percent);
+                if (_window.SizeToContent is not (SizeToContent.Height or SizeToContent.WidthAndHeight)) _window.Height = UiScale.Resized(_window.ActualHeight, from, percent);
+                KeepOnScreen();
+            }
+        }
+        finally
+        {
+            IsScaling = false;
         }
         _settings.SetScale(Kind, percent);
         _settings.Save();

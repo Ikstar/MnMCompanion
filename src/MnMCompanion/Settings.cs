@@ -93,6 +93,10 @@ public sealed class Settings
     public Dictionary<string, Bounds> PageWindows { get; set; } = [];
     public List<string> PageWindowsOpen { get; set; } = [];
 
+    /// <summary>Which page windows are in mini view (headline and top few rows), and any compact height the player dragged by hand (absent means fitted automatically).</summary>
+    public List<string> PageWindowsCompact { get; set; } = [];
+    public Dictionary<string, double> PageWindowsCompactHeight { get; set; } = [];
+
     /// <summary>The size a kind of window is drawn at, in percent.</summary>
     public int ScaleOf(string window) => WindowScales.TryGetValue(window, out var p) ? Display.UiScale.Clamp(p) : Display.UiScale.Default;
 

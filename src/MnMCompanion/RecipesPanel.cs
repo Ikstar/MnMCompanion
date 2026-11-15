@@ -137,6 +137,10 @@ internal sealed class RecipesPanel : Border, IMiniPage
 
     public bool NeedsHistory => false;
 
+    public bool SupportsCompact => false;
+
+    public void SetCompact(bool compact) { }
+
     public void Say(string text) => _status.Text = text;
 
     /// <summary>Called when the page is shown and whenever the ledger changes (nothing here depends on it): it redraws only if something it shows has changed, so the list stays where the player scrolled it.</summary>

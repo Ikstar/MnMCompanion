@@ -1,3 +1,4 @@
+using System.Text.Json;
 using MnMCompanion.Display;
 
 namespace MnMCompanion.Tests;
@@ -116,5 +117,95 @@ public class DisplayTests
         Assert.Equal(UiFonts.DefaultDisplay, UiFonts.Display(null));
         Assert.Equal("Verdana, Segoe UI", UiFonts.Text("Verdana"));
         Assert.Equal("Verdana, Segoe UI", UiFonts.Display("Verdana"));
+    }
+
+    private static string Root()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "MnMCompanion.sln"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new InvalidOperationException("MnMCompanion.sln not found above " + AppContext.BaseDirectory);
+    }
+
+    private sealed class CompactSettingsContract
+    {
+        public List<string> PageWindowsCompact { get; set; } = [];
+        public Dictionary<string, double> PageWindowsCompactHeight { get; set; } = [];
+    }
+
+    [Fact]
+    public void Compact_window_heights_scale_in_proportion_separately_from_full_window_height()
+    {
+        double compactMin = 96 * UiScale.Factor(150);
+        double compactMax = 260 * UiScale.Factor(150);
+        Assert.Equal(144.0, compactMin, 6);
+        Assert.Equal(390.0, compactMax, 6);
+
+        double manualCompactAt150 = UiScale.Resized(172.0, 100, 150);
+        double expandedAt150 = UiScale.Resized(580.0, 100, 150);
+        Assert.Equal(258.0, manualCompactAt150);
+        Assert.Equal(870.0, expandedAt150);
+        Assert.Equal(172.0, UiScale.Resized(manualCompactAt150, 150, 100));
+        Assert.Equal(580.0, UiScale.Resized(expandedAt150, 150, 100));
+    }
+
+    [Fact]
+    public void Compact_window_settings_round_trip_through_json()
+    {
+        var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+        var original = new CompactSettingsContract
+        {
+            PageWindowsCompact = ["Loot", "Harvest"],
+            PageWindowsCompactHeight = new Dictionary<string, double> { ["Loot"] = 172.0 },
+        };
+
+        var json = JsonSerializer.Serialize(original, jsonOptions);
+        var loaded = JsonSerializer.Deserialize<CompactSettingsContract>(json, jsonOptions);
+
+        Assert.NotNull(loaded);
+        Assert.Equal(["Loot", "Harvest"], loaded.PageWindowsCompact);
+        Assert.Single(loaded.PageWindowsCompactHeight);
+        Assert.Equal(172.0, loaded.PageWindowsCompactHeight["Loot"]);
+
+        var empty = JsonSerializer.Deserialize<CompactSettingsContract>("{}", jsonOptions);
+        Assert.NotNull(empty);
+        Assert.Empty(empty.PageWindowsCompact);
+        Assert.Empty(empty.PageWindowsCompactHeight);
+
+        var settingsSource = File.ReadAllText(Path.Combine(Root(), "src", "MnMCompanion", "Settings.cs"));
+        Assert.Contains("public List<string> PageWindowsCompact { get; set; } = [];", settingsSource);
+        Assert.Contains("public Dictionary<string, double> PageWindowsCompactHeight { get; set; } = [];", settingsSource);
+    }
+
+    [Fact]
+    public void Snapshot_compact_and_size_arguments_parse_popout_compact_and_explicit_size()
+    {
+        static (bool PopOut, bool Compact, bool HasSize, int Width, int Height) ParseSnapshotFlags(string[] args)
+        {
+            string? Value(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+            int w = 390, h = 600;
+            var size = Value("--size");
+            if (size is not null && size.Split('x') is [var sw, var sh] && int.TryParse(sw, out var pw) && int.TryParse(sh, out var ph)) (w, h) = (pw, ph);
+            return (args.Contains("--popout"), args.Contains("--compact"), size is not null, w, h);
+        }
+
+        var autoSized = ParseSnapshotFlags(["--snapshot", "out.png", "--window", "--mini", "Loot", "--popout", "--compact"]);
+        Assert.True(autoSized.PopOut);
+        Assert.True(autoSized.Compact);
+        Assert.False(autoSized.HasSize);
+        Assert.Equal(390, autoSized.Width);
+        Assert.Equal(600, autoSized.Height);
+
+        var explicitSized = ParseSnapshotFlags(["--snapshot", "out.png", "--window", "--mini", "Loot", "--popout", "--compact", "--size", "420x180"]);
+        Assert.True(explicitSized.PopOut);
+        Assert.True(explicitSized.Compact);
+        Assert.True(explicitSized.HasSize);
+        Assert.Equal(420, explicitSized.Width);
+        Assert.Equal(180, explicitSized.Height);
+
+        var appSource = File.ReadAllText(Path.Combine(Root(), "src", "MnMCompanion", "App.xaml.cs"));
+        Assert.Contains("bool Compact = false, bool HasSize = false", appSource);
+        Assert.Contains("args.Contains(\"--compact\")", appSource);
+        Assert.Contains("var size = Value(\"--size\");", appSource);
+        Assert.Contains("size is not null", appSource);
     }
 }

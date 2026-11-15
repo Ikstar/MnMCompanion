@@ -27,6 +27,12 @@ internal interface IMiniPage
     void Tick();
 
     void Say(string text);
+
+    /// <summary>Whether this page has a compact layout (headline and top few rows) for a mini window.</summary>
+    bool SupportsCompact { get; }
+
+    /// <summary>Switches between the full page and the compact mini layout (pages without one stay as they are).</summary>
+    void SetCompact(bool compact);
 }
 
 /// <summary>
@@ -47,6 +53,14 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
 
     private readonly TextBlock _title = new() { FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = Palette.Text, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly Button _scope = new() { Style = (Style)Ui.Theme["TextButton"], HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(9, 4, 9, 4) };
+    // The compact layout's own copies of the headline: Big, Caption and Sub already sit inside the session header, and an element has one parent
+    private readonly TextBlock _compactBig = new TextBlock { FontSize = 18, FontWeight = FontWeights.SemiBold, Foreground = Palette.Text, HorizontalAlignment = HorizontalAlignment.Right }.UseDisplay();
+    private readonly TextBlock _compactCaption = new() { FontSize = 10, Foreground = Palette.Muted, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, -2, 1, 0) };
+    private readonly TextBlock _compactSub = new() { FontSize = 11, Foreground = Palette.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0), TextTrimming = TextTrimming.CharacterEllipsis };
+    // The full top (the session header and the tabs), and the compact headline shown instead of it
+    private readonly StackPanel _chrome = new();
+    private readonly DockPanel _compactHeader = new() { Visibility = Visibility.Collapsed };
+    private bool _compact;
     private readonly TextBlock _status;
     private readonly string _historyKey;
     private readonly Action<string> _openHistory;
@@ -71,8 +85,7 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
         Padding = new Thickness(12, 10, 12, 8);
         _scope.ToolTip = "Which part of the day to show: this session, an earlier one, or the whole day. It is the same on every page.";
 
-        var stack = new StackPanel();
-        stack.Children.Add(SessionHeader.Build(session, _title, Sub, Big, Caption, _scope));
+        _chrome.Children.Add(SessionHeader.Build(session, _title, Sub, Big, Caption, _scope));
         if (tabs.Length > 1)
         {
             var bar = new Border { CornerRadius = new CornerRadius(8), Background = (Brush)Ui.Theme["Subtle"], Padding = new Thickness(2), Margin = new Thickness(0, 8, 0, 0) };
@@ -85,8 +98,19 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
                 grid.Children.Add(rb);
             }
             bar.Child = grid;
-            stack.Children.Add(bar);
+            _chrome.Children.Add(bar);
         }
+
+        var figure = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        figure.Children.Add(_compactBig);
+        figure.Children.Add(_compactCaption);
+        DockPanel.SetDock(figure, Dock.Right);
+        _compactHeader.Children.Add(figure);
+        _compactHeader.Children.Add(_compactSub);
+
+        var stack = new StackPanel();
+        stack.Children.Add(_chrome);
+        stack.Children.Add(_compactHeader);
         var root = new DockPanel();
         DockPanel.SetDock(stack, Dock.Top);
         root.Children.Add(stack);
@@ -99,9 +123,28 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
 
     public bool NeedsHistory => true;
 
+    public abstract bool SupportsCompact { get; }
+
+    public void SetCompact(bool compact)
+    {
+        if (!SupportsCompact) compact = false;
+        if (_compact == compact) return;
+        _compact = compact;
+        _chrome.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        _compactHeader.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        _seen = "";
+        Redraw();
+    }
+
     protected abstract T Query(HistoryStore store, string server, string character, Period period);
 
+    /// <summary>Sets the headline (<see cref="Big"/>, <see cref="Caption"/>, <see cref="Sub"/>) from the data, for either layout.</summary>
+    protected abstract void PopulateHeader(T data);
+
     protected abstract void Render(T data, string tab);
+
+    /// <summary>The compact layout's rows: the page's top few. By default the same as the full page's current tab.</summary>
+    protected virtual void RenderCompact(T data) => Render(data, _tab);
 
     // ------------------------------------------------------------------ reading
 
@@ -128,8 +171,13 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
     {
         try
         {
-            var data = await Task.Run(() => Query(c.Store, c.Server, c.Character, c.Period));
-            if (generation == _generation) Show(data, c.Key);
+            var data = await Task.Run(() =>
+            {
+                // Stepping quickly through days queues one read per step: one already overtaken by a newer one doesn't touch the history database
+                if (generation != System.Threading.Volatile.Read(ref _generation)) return default!;
+                return Query(c.Store, c.Server, c.Character, c.Period);
+            });
+            if (generation == _generation && data is not null) Show(data, c.Key);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -163,8 +211,21 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
     {
         Body.Children.Clear();
         Sub.Text = Big.Text = Caption.Text = "";
+        Big.Foreground = Palette.Text;
         _status.Text = "";
-        if (_data is not null) Render(_data, _tab);
+        if (_data is not null) PopulateHeader(_data);
+        MirrorHeader();
+        if (_data is null) return;
+        if (_compact) RenderCompact(_data); else Render(_data, _tab);
+    }
+
+    /// <summary>Copies the headline onto the compact layout's own copies of it.</summary>
+    private void MirrorHeader()
+    {
+        _compactBig.Text = Big.Text;
+        _compactBig.Foreground = Big.Foreground;
+        _compactCaption.Text = Caption.Text;
+        _compactSub.Text = Sub.Text;
     }
 
     private void Message(string text)
@@ -172,6 +233,9 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
         _data = null;
         Body.Children.Clear();
         Sub.Text = Big.Text = Caption.Text = "";
+        Big.Foreground = Palette.Text;
+        _status.Text = "";
+        MirrorHeader();
         Body.Children.Add(LootPanel.Line(text, Palette.Muted));
     }
 
@@ -180,6 +244,10 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
     // ------------------------------------------------------------------ drawing helpers
 
     protected void Empty(string text) => Body.Children.Add(LootPanel.Line(text, Palette.Muted));
+
+    /// <summary>A small muted heading over a group of rows in the compact layout.</summary>
+    protected void Section(string text) =>
+        Body.Children.Add(new TextBlock { Text = text, FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = Palette.Muted, Margin = new Thickness(2, 6, 0, 1) });
 
     protected static string Plural(int n, string word) => LootPanel.Plural(n, word);
 
@@ -210,15 +278,21 @@ internal sealed record VendorMiniData(IReadOnlyList<VendorRow> Rows);
 internal sealed class VendorMini(LootStore store, HistoryData? data, SessionScope session, TextBlock status, Action<string> openHistory)
     : StatsPanel<VendorMiniData>(store, data, session, status, "Vendors", openHistory, ["Sales", "Purchases", "Log"])
 {
+    public override bool SupportsCompact => true;
+
     protected override VendorMiniData Query(HistoryStore s, string server, string character, Period period) => new(s.Vendor(server, character, period));
+
+    protected override void PopulateHeader(VendorMiniData data)
+    {
+        var t = VendorSummary.Totals(data.Rows);
+        Sub.Text = $"{Plural(t.SoldStacks + t.BoughtStacks, "stack")} · sold {Coin(t.SoldCopper)} · bought {Coin(t.BoughtCopper)}";
+        Big.Text = (t.Net < 0 ? "−" : "+") + Coin(Math.Abs(t.Net));
+        Caption.Text = "sold minus bought";
+    }
 
     protected override void Render(VendorMiniData data, string tab)
     {
         var rows = data.Rows;
-        var t = VendorSummary.Totals(rows);
-        Sub.Text = $"{Plural(t.SoldStacks + t.BoughtStacks, "stack")} · sold {Coin(t.SoldCopper)} · bought {Coin(t.BoughtCopper)}";
-        Big.Text = (t.Net < 0 ? "−" : "+") + Coin(Math.Abs(t.Net));
-        Caption.Text = "sold minus bought";
         if (rows.Count == 0) { Empty("Nothing sold to or bought from a vendor in this part of the day."); return; }
         switch (tab)
         {
@@ -228,6 +302,32 @@ internal sealed class VendorMini(LootStore store, HistoryData? data, SessionScop
         }
     }
 
+    /// <summary>The compact layout: the three best sellers and the three biggest purchases.</summary>
+    protected override void RenderCompact(VendorMiniData data)
+    {
+        var rows = data.Rows;
+        if (rows.Count == 0) { Empty("Nothing sold to or bought from a vendor in this part of the day."); return; }
+        var sold = VendorSummary.ByItem(rows, VendorDirection.Sold).Take(3).ToList();
+        var bought = VendorSummary.ByItem(rows, VendorDirection.Bought).Take(3).ToList();
+        if (sold.Count > 0)
+        {
+            Section("Sold");
+            double top = Math.Max(1L, sold.Max(x => x.Total));
+            int rank = 0;
+            foreach (var i in sold) Body.Children.Add(ItemRow(++rank, i, Palette.Heal, top));
+        }
+        if (bought.Count > 0)
+        {
+            Section("Bought");
+            double top = Math.Max(1L, bought.Max(x => x.Total));
+            int rank = 0;
+            foreach (var i in bought) Body.Children.Add(ItemRow(++rank, i, Palette.Taken, top));
+        }
+    }
+
+    private FrameworkElement ItemRow(int rank, VendorItem i, Brush brush, double top) =>
+        RankRow(rank, i.Item, Plural(i.Units, "item"), Coin(i.Total), brush, i.Total / top, $"{Plural(i.Stacks, "stack")} · {Coin(i.Each)} each · last {i.Last:HH:mm}");
+
     private void Items(IReadOnlyList<VendorRow> rows, VendorDirection direction, Brush brush)
     {
         var items = VendorSummary.ByItem(rows, direction);
@@ -235,8 +335,7 @@ internal sealed class VendorMini(LootStore store, HistoryData? data, SessionScop
         double top = Math.Max(1, items.Max(i => (double)i.Total));
         int rank = 0;
         foreach (var i in items.Take(60))
-            Body.Children.Add(RankRow(++rank, i.Item, Plural(i.Units, "item"), Coin(i.Total), brush, i.Total / top,
-                $"{Plural(i.Stacks, "stack")} · {Coin(i.Each)} each · last {i.Last:HH:mm}"));
+            Body.Children.Add(ItemRow(++rank, i, brush, top));
         if (items.Count > 60) Empty($"{items.Count - 60} more kinds are in the History window.");
     }
 
@@ -256,15 +355,22 @@ internal sealed record TradesMiniData(IReadOnlyList<TradeRow> Rows);
 internal sealed class TradesMini(LootStore store, HistoryData? data, SessionScope session, TextBlock status, Action<string> openHistory)
     : StatsPanel<TradesMiniData>(store, data, session, status, "Trades", openHistory, ["Trades"])
 {
+    public override bool SupportsCompact => false;
+
     protected override TradesMiniData Query(HistoryStore s, string server, string character, Period period) => new(s.Trades(server, character, period));
 
-    protected override void Render(TradesMiniData data, string tab)
+    protected override void PopulateHeader(TradesMiniData data)
     {
         var trades = TradeSummary.Pair(data.Rows);
         long gave = trades.Sum(t => t.GaveCoin), got = trades.Sum(t => t.ReceivedCoin);
         Sub.Text = $"{Plural(trades.Count, "trade")} · {Plural(trades.Select(t => t.Partner).Distinct().Count(), "trader")} · gave {Coin(gave)}, got {Coin(got)} in coin";
         Big.Text = trades.Count.ToString("N0");
         Caption.Text = trades.Count == 1 ? "trade" : "trades";
+    }
+
+    protected override void Render(TradesMiniData data, string tab)
+    {
+        var trades = TradeSummary.Pair(data.Rows);
         if (trades.Count == 0) { Empty("No trades in this part of the day."); return; }
         foreach (var t in trades.OrderByDescending(t => t.Time).Take(100))
             Body.Children.Add(LogLine((Time(t.Time), Palette.Muted, false), (TradeSummary.Label(t.Partner), Palette.Text, true),
@@ -280,21 +386,36 @@ internal sealed record ItemsMiniData(IReadOnlyList<ItemMoveRow> Rows);
 internal sealed class ItemsMini(LootStore store, HistoryData? data, SessionScope session, TextBlock status, Action<string> openHistory)
     : StatsPanel<ItemsMiniData>(store, data, session, status, "Changes", openHistory, ["Log", "Lost"])
 {
+    private const string Nothing = "No items dropped, picked up or destroyed in this part of the day.";
+
+    public override bool SupportsCompact => true;
+
     protected override ItemsMiniData Query(HistoryStore s, string server, string character, Period period) => new(s.ItemMoves(server, character, period));
 
-    protected override void Render(ItemsMiniData data, string tab)
+    protected override void PopulateHeader(ItemsMiniData data)
     {
         var t = ItemChangeSummary.Totals(data.Rows);
         Sub.Text = $"{t.Dropped:N0} dropped · {t.PickedUp:N0} picked up · {t.Destroyed:N0} destroyed";
         Big.Text = (t.Dropped + t.PickedUp + t.Destroyed).ToString("N0");
         Caption.Text = "item changes";
-        if (data.Rows.Count == 0) { Empty("No items dropped, picked up or destroyed in this part of the day."); return; }
+    }
+
+    protected override void Render(ItemsMiniData data, string tab)
+    {
+        if (data.Rows.Count == 0) { Empty(Nothing); return; }
         if (tab == "Lost") Lost(data.Rows); else Log(data.Rows);
     }
 
-    private void Log(IReadOnlyList<ItemMoveRow> rows)
+    /// <summary>The compact layout: the three latest changes.</summary>
+    protected override void RenderCompact(ItemsMiniData data)
     {
-        foreach (var r in rows.OrderByDescending(r => r.Time).Take(200))
+        if (data.Rows.Count == 0) { Empty(Nothing); return; }
+        Log(data.Rows, 3);
+    }
+
+    private void Log(IReadOnlyList<ItemMoveRow> rows, int count = 200)
+    {
+        foreach (var r in rows.OrderByDescending(r => r.Time).Take(count))
         {
             var (word, brush) = r.Kind switch { ItemMoveKind.Dropped => ("Dropped  ", Palette.Gold), ItemMoveKind.PickedUp => ("Picked up  ", Palette.Heal), _ => ("Destroyed  ", Palette.Taken) };
             Body.Children.Add(LogLine((Time(r.Time), Palette.Muted, false), (word, brush, true), ($"[{r.Item}]" + (r.Qty > 1 ? $" ×{r.Qty}" : ""), Palette.Gold, false),
@@ -321,16 +442,34 @@ internal sealed record HarvestMiniData(IReadOnlyList<HarvestRow> Rows);
 internal sealed class HarvestMini(LootStore store, HistoryData? data, SessionScope session, TextBlock status, Action<string> openHistory)
     : StatsPanel<HarvestMiniData>(store, data, session, status, "Harvest", openHistory, ["Items", "Log"])
 {
+    private const string Nothing = "Nothing gathered in this part of the day.";
+
+    public override bool SupportsCompact => true;
+
     protected override HarvestMiniData Query(HistoryStore s, string server, string character, Period period) => new(s.Harvests(server, character, period));
 
-    protected override void Render(HarvestMiniData data, string tab)
+    protected override void PopulateHeader(HarvestMiniData data)
     {
         var t = HarvestSummary.Totals(data.Rows);
         Sub.Text = $"{Plural(t.Harvests, "harvest")} · {t.Units:N0} gathered · {Plural(t.Kinds, "kind")}";
         if (t.PerHour is { } perHour) { Big.Text = $"{perHour:N0}/hr"; Caption.Text = "gathered an hour"; }
         else { Big.Text = t.Units.ToString("N0"); Caption.Text = "gathered"; }
-        if (data.Rows.Count == 0) { Empty("Nothing gathered in this part of the day."); return; }
+    }
+
+    protected override void Render(HarvestMiniData data, string tab)
+    {
+        if (data.Rows.Count == 0) { Empty(Nothing); return; }
         if (tab == "Log") Log(data.Rows); else Items(data.Rows);
+    }
+
+    /// <summary>The compact layout: the three things gathered most.</summary>
+    protected override void RenderCompact(HarvestMiniData data)
+    {
+        if (data.Rows.Count == 0) { Empty(Nothing); return; }
+        var top = HarvestSummary.ByItem(data.Rows).Take(3).ToList();
+        double max = Math.Max(1, top.Count == 0 ? 1 : top.Max(x => (double)x.Units));
+        int rank = 0;
+        foreach (var i in top) Body.Children.Add(ItemRow(++rank, i, max));
     }
 
     private void Items(IReadOnlyList<HarvestRow> rows)
@@ -339,12 +478,15 @@ internal sealed class HarvestMini(LootStore store, HistoryData? data, SessionSco
         double top = Math.Max(1, items.Max(i => (double)i.Units));
         int rank = 0;
         foreach (var i in items.Take(60))
-        {
-            var v = Store.Values.Of(i.Item);
-            var worth = v.Known ? (v.Estimated ? "~" : "") + Coin(v.Each * i.Units) : "";
-            Body.Children.Add(RankRow(++rank, i.Item, worth.Length > 0 ? $"worth {worth}" : Plural(i.Harvests, "harvest"), "×" + i.Units.ToString("N0"), Palette.Heal, i.Units / top,
-                $"{Plural(i.Harvests, "harvest")} · {string.Join(", ", i.Zones.Select(ZoneMaps.DisplayName))}"));
-        }
+            Body.Children.Add(ItemRow(++rank, i, top));
+    }
+
+    private FrameworkElement ItemRow(int rank, HarvestItem i, double top)
+    {
+        var v = Store.Values.Of(i.Item);
+        var worth = v.Known ? (v.Estimated ? "~" : "") + Coin(v.Each * i.Units) : "";
+        return RankRow(rank, i.Item, worth.Length > 0 ? $"worth {worth}" : Plural(i.Harvests, "harvest"), "×" + i.Units.ToString("N0"), Palette.Heal, i.Units / top,
+            $"{Plural(i.Harvests, "harvest")} · {string.Join(", ", i.Zones.Select(ZoneMaps.DisplayName))}");
     }
 
     private void Log(IReadOnlyList<HarvestRow> rows)

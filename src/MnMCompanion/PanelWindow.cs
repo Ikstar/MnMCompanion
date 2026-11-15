@@ -239,8 +239,18 @@ internal sealed class PanelWindow : Window
             rb.ToolTip = $"{key}. Right-click to open it in a window of its own.";
             var menu = new ContextMenu();
             var popOut = new MenuItem { Header = $"Open {key} in its own window", ToolTip = "A second copy of this page in a window you can move, resize and keep beside the game. It stays up to date with the small window." };
-            popOut.Click += (_, _) => PopOut(key);
+            popOut.Click += (_, _) => PopOut(key, compact: false);
             menu.Items.Add(popOut);
+            if (key is "Loot" or "Vendor" or "Items" or "Harvest")
+            {
+                var mini = new MenuItem
+                {
+                    Header = $"Open {key} as a mini window",
+                    ToolTip = "A compact window with only the headline and top 3 rows.",
+                };
+                mini.Click += (_, _) => PopOut(key, compact: true);
+                menu.Items.Add(mini);
+            }
             rb.ContextMenu = menu;
             _nav[key] = rb;
             grid.Children.Add(rb);
@@ -293,17 +303,19 @@ internal sealed class PanelWindow : Window
     }
 
     /// <summary>Opens a page in a window of its own, or brings the one it already has forward.</summary>
-    public PageWindow? PopOut(string key, bool quiet = false)
+    public PageWindow? PopOut(string key, bool quiet = false, bool? compact = null)
     {
         if (!PageNames.Contains(key)) return null;
         if (_pageWindows.TryGetValue(key, out var open))
         {
             if (open.WindowState == WindowState.Minimized) open.WindowState = WindowState.Normal;
+            if (compact is { } c) open.SetCompactMode(c);
             if (!quiet) open.Activate();
             return open;
         }
         var (page, status) = MakePage(key);
-        var window = new PageWindow(key, page, status, _store, _settings, this, _pageWindows.Count);
+        var window = new PageWindow(key, page, status, _store, _session, _settings, this, _pageWindows.Count);
+        if (compact is { } c2) window.SetCompactMode(c2);
         _pageWindows[key] = window;
         if (!_settings.PageWindowsOpen.Contains(key)) { _settings.PageWindowsOpen.Add(key); _settings.Save(); }
         window.Closed += (_, _) =>
@@ -330,7 +342,7 @@ internal sealed class PanelWindow : Window
                 (day, member, session) => BreakdownRequested?.Invoke(day, member, session));
             return (loot, loot.StatusLine);
         }
-        var status = new TextBlock();
+        var status = new TextBlock { FontSize = 10, Foreground = Palette.Muted, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         IMiniPage page = key switch
         {
             "Map" => new MapPanel(_store, _session, _settings, status),

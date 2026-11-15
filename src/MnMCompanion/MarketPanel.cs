@@ -163,6 +163,10 @@ internal sealed class MarketPanel : Border, IMiniPage
 
     public bool NeedsHistory => false;
 
+    public bool SupportsCompact => false;
+
+    public void SetCompact(bool compact) { }
+
     public void Say(string text) => _status.Text = text;
 
     public void Refresh()

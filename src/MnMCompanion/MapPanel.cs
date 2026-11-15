@@ -81,6 +81,10 @@ internal sealed class MapPanel : Border, IMiniPage, IDisposable
 
     public bool NeedsHistory => false;
 
+    public bool SupportsCompact => false;
+
+    public void SetCompact(bool compact) { }
+
     public void RefreshNow() => Refresh();
 
     public void Say(string text) => _status.Text = text;
