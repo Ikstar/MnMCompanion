@@ -59,6 +59,7 @@ internal sealed class ShareWindow : Window
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = true;
+        Ui.ApplyWindowIcon(this);
         Topmost = mode == ShareMode.Ask;
         Background = (Brush)Ui.Theme["Window"];
         Foreground = Palette.Text;

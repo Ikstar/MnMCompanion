@@ -109,6 +109,7 @@ internal sealed class TimersWindow : Window
         MinHeight = 110;
         UseLayoutRounding = true;
         ShowInTaskbar = false;
+        Ui.ApplyWindowIcon(this);
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         this.UseText();
 
