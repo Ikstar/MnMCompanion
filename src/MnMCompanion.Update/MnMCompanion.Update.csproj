@@ -3,7 +3,7 @@
   <!-- Finds out whether a newer Companion is on GitHub and downloads it, checked against its SHA-256. The only project allowed to use
        the network, and only for this project's own GitHub release pages (see LedgerOnlyTests). No packages. -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>MnMCompanion.Update</RootNamespace>
