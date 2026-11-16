@@ -47,7 +47,7 @@ public sealed record ItemWorth(string Item, int Count, ItemValue Value, IReadOnl
 /// </summary>
 public sealed record LootMember(string Name, bool You, string Class, int Level, int Mobs, int Items, long Copper, long Split,
     IReadOnlyList<MemberItem> Taken, IReadOnlyList<MemberMob> MobList, DateTime First, DateTime Last,
-    long ItemValue = 0, int Priced = 0, int Estimated = 0, int Unpriced = 0, long Purses = 0, long Received = 0, int SplitPurses = 0, int EstimatedShares = 0, int Unrecorded = 0)
+    long ItemValue = 0, int Priced = 0, int Estimated = 0, int Unpriced = 0, long Purses = 0, long Received = 0, int SplitPurses = 0, int EstimatedShares = 0, int Unrecorded = 0, int Custom = 0)
 {
     /// <summary>The coin counted for them plus what a vendor would pay for the items (the priced and the estimated ones; <see cref="Unpriced"/> add nothing).</summary>
     public long Total => Copper + ItemValue;
@@ -66,7 +66,7 @@ public sealed record LootMember(string Name, bool You, string Class, int Level, 
 /// else the ledger shows only the purses they looted, never what an autosplit gave them, so the group is compared by items alone.
 /// <see cref="EstimatedShares"/> of the shares in the coin were not in the ledger and are estimated (the owner's own purses in a group).
 /// </summary>
-public sealed record LootOurs(long Copper, long ItemValue, int Items, int Estimated, int Unpriced, int EstimatedShares = 0, int Unrecorded = 0)
+public sealed record LootOurs(long Copper, long ItemValue, int Items, int Estimated, int Unpriced, int EstimatedShares = 0, int Unrecorded = 0, int Custom = 0)
 {
     public long Total => Copper + ItemValue;
 
@@ -96,6 +96,7 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
 
     public long ItemValue => Members.Sum(m => m.ItemValue);
     public int Priced => Members.Sum(m => m.Priced);
+    public int Custom => Members.Sum(m => m.Custom);
     public int Estimated => Members.Sum(m => m.Estimated);
     public int Unpriced => Members.Sum(m => m.Unpriced);
 
@@ -119,7 +120,7 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
             var mine = Members.Where(m => m.You).ToList();
             return mine.Count == 0 ? LootOurs.None
                 : new LootOurs(mine.Sum(m => m.Copper), mine.Sum(m => m.ItemValue), mine.Sum(m => m.Items), mine.Sum(m => m.Estimated), mine.Sum(m => m.Unpriced),
-                    mine.Sum(m => m.EstimatedShares), mine.Sum(m => m.Unrecorded));
+                    mine.Sum(m => m.EstimatedShares), mine.Sum(m => m.Unrecorded), mine.Sum(m => m.Custom));
         }
     }
 
@@ -159,13 +160,14 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
                 .ToList();
             long itemValue = taken.Sum(t => t.Total);
             int priced = taken.Where(t => t.Value.Known && !t.Value.Estimated).Sum(t => t.Count);
+            int custom = taken.Where(t => t.Value.Custom).Sum(t => t.Count);
             int estimated = taken.Where(t => t.Value.Estimated).Sum(t => t.Count);
             int unpriced = taken.Where(t => !t.Value.Known).Sum(t => t.Count);
             members.Add(new LootMember(p.Who, p.You, named is null || named.Class.Length == 0 ? "" : GameClasses.NameOf(named.Class), named?.Level ?? 0,
                 p.Mobs, p.Items, p.Copper, mine.Where(e => e.Kind == LootKind.Coin).Sum(e => e.Split), taken, mobList,
                 mine.Count == 0 ? default : mine.Min(e => e.Time), mine.Count == 0 ? default : mine.Max(e => e.Time), itemValue, priced, estimated, unpriced,
                 p.Purses, p.Received, p.SplitPurses, p.EstimatedShares,
-                mine.Count(e => e.Kind == LootKind.Coin && e.Source == LootExtractor.UnknownCreature)));
+                mine.Count(e => e.Kind == LootKind.Coin && e.Source == LootExtractor.UnknownCreature), custom));
         }
         // By what each took: coin is no basis for comparing people, since only the ledger owner's shares of divided purses are ever known
         members = members.OrderByDescending(m => m.ItemValue).ThenByDescending(m => m.Items).ThenByDescending(m => m.Mobs).ThenBy(m => m.Name, comparer).ToList();
@@ -176,7 +178,7 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
             .OrderByDescending(m => m.Looted).ThenBy(m => m.Mob, comparer).ToList();
 
         var worth = itemTakers.Select(i => new ItemWorth(i.Item, i.Count, values.Of(i.Item), i.By))
-            .OrderByDescending(i => i.Total).ThenByDescending(i => i.Count).ThenBy(i => i.Item, comparer).ToList();
+            .OrderByDescending(i => i.Total).ThenByDescending(i => i.Value.Known).ThenByDescending(i => i.Count).ThenBy(i => i.Item, comparer).ToList();
         return new LootDay(day, LootSummary.Totals(live), members, itemTakers, mobs, live, worth);
     }
 }

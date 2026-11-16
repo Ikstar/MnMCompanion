@@ -307,7 +307,7 @@ public partial class LootHistoryPage : UserControl
         {
             double frac = (double)m.ItemValue / top;
             rows.Add(new LootMemberItem(m.Name, m.Class.Length > 0 ? $"{m.Name} · {m.Class}" : m.Name,
-                m.ItemValue > 0 || m.Unpriced > 0 || m.Unrecorded > 0 ? LootSummary.ItemsWorthOf(m) : "—",
+                m.ItemValue > 0 || m.Priced > 0 || m.Estimated > 0 || m.Unpriced > 0 || m.Unrecorded > 0 ? LootSummary.ItemsWorthOf(m) : "—",
                 $"{Plural(m.Mobs, "mob")} · {LootSummary.ItemsOf(m)}" + (m.Level > 0 ? $" · level {m.Level}" : ""), BrushOf(m),
                 new GridLength(Math.Max(frac, 0.0001), GridUnitType.Star), new GridLength(Math.Max(1 - frac, 0.0001), GridUnitType.Star)));
         }
@@ -517,8 +517,8 @@ public partial class LootHistoryPage : UserControl
         AddTile("Days", $"{days:N0}", $"{d.First:MMM d} to {d.Last:MMM d}");
         AddTile("Looters", $"{d.Members.Count:N0}", d.Members.MaxBy(m => m.Items) is { } most ? $"most: {most.Name}" : "");
         AddTile("From", $"{d.Mobs.Count:N0}", d.Mobs.Count == 1 ? "kind of monster" : "kinds of monster");
-        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.Priced, d.Estimated, d.Unpriced));
-        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, $"{(best.Value.Estimated ? "~" : "")}{LootSummary.Coin(best.Value.Each)} each · {best.Count:N0} taken");
+        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.Priced, d.Custom, d.Estimated, d.Unpriced));
+        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
 
         var query = _found?.Query ?? Query;
         Tabs(["Items", "Looters", "Monsters", "Days", "Loot log"], tab => tab switch
@@ -528,7 +528,7 @@ public partial class LootHistoryPage : UserControl
             "Monsters" => AnswerMobsTable(d),
             "Days" => AnswerDaysTable(d),
             _ => Log(d.Events, withDate: true),
-        }, _ => [("Copy items", () => LootSearch.Text(query, d))]);
+        }, _ => [("Copy items", () => LootSearch.Text(query, d))], tab => tab == "Items" ? [CustomPricesAction()] : []);
     }
 
     private void RenderAnswerMember(LootDay day, LootMember m)
@@ -546,15 +546,15 @@ public partial class LootHistoryPage : UserControl
         AddTile("Kinds", $"{m.Taken.Count:N0}", $"of {Plural(day.Items.Count, "kind")} found");
         AddTile("Days", $"{DaysOf(day, m.Name):N0}", $"{m.First:MMM d} to {m.Last:MMM d}");
         AddTile("Corpses", $"{m.Mobs:N0}", "looted that gave one");
-        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.Priced, m.Estimated, m.Unpriced));
-        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, $"{(best.Value.Estimated ? "~" : "")}{LootSummary.Coin(best.Value.Each)} each · {best.Count:N0} taken");
+        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.Priced, m.Custom, m.Estimated, m.Unpriced));
+        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
 
         Tabs(["Items", "Monsters", "Loot log"], tab => tab switch
         {
             "Items" => MemberItemsTable(m, search: false),
             "Monsters" => MemberMobsTable(m, coin: false),
             _ => Log(day.Events.Where(e => e.Who.Equals(m.Name, StringComparison.OrdinalIgnoreCase)), withDate: true),
-        }, _ => [("Copy summary", () => LootSummary.MemberText(m))]);
+        }, _ => [("Copy summary", () => LootSummary.MemberText(m))], tab => tab == "Items" ? [CustomPricesAction()] : []);
     }
 
     private FrameworkElement AnswerLootersTable(LootDay d)
@@ -567,7 +567,7 @@ public partial class LootHistoryPage : UserControl
             new("Player", 0, m => m.ClassLevel.Length > 0 ? $"{m.Name} · {m.ClassLevel}" : m.Name, m => m.Name, Right: false),
             new("Taken", 66, m => $"{m.Items:N0}", m => m.Items, Tip: "How many of the matching items they took"),
             new("Kinds", 60, m => $"{m.Taken.Count:N0}", m => m.Taken.Count),
-            new("Worth", 100, m => m.ItemValue > 0 || m.Unpriced > 0 ? LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0) : "—", m => m.ItemValue,
+            new("Worth", 100, m => m.ItemValue > 0 || m.Priced > 0 || m.Estimated > 0 || m.Unpriced > 0 ? LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0) : "—", m => m.ItemValue,
                 Tip: "What a vendor would pay for them. ~ = some valued by their family, + = some with no known price (not counted)"),
             new("Share", 60, m => Fmt.Pct(m.Items / total), m => m.Items, Tip: "Of everything the search found"),
             new("Days", 56, m => $"{days.GetValueOrDefault(m.Name):N0}", m => days.GetValueOrDefault(m.Name), Tip: "Days they took one"),
@@ -608,12 +608,12 @@ public partial class LootHistoryPage : UserControl
         Tiles.Children.Clear();
         AddTile("Mobs looted", $"{t.Mobs:N0}", $"{d.Mobs.Count:N0} kinds");
         AddTile("Coin", LootSummary.Coin(t.Copper), t.Mobs > 0 ? $"{LootSummary.Coin(t.Copper / t.Mobs)} a mob" : "in purses");
-        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.Priced, d.Estimated, d.Unpriced));
+        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.Priced, d.Custom, d.Estimated, d.Unpriced));
         AddTile("Items", $"{t.Items:N0}", $"{d.Items.Count:N0} kinds");
         if (d.Unrecorded > 0) AddTile("Items not recorded", $"{d.Unrecorded:N0} corpses", "the game's ledger leaves out the items of monsters with an apostrophe in their name (Skri'Var…)", Palette.Muted);
         AddTile("Looters", $"{d.Members.Count:N0}", d.Members.Count > 0 ? $"most: {d.Members[0].Name}" : "");
         if (d.Members.MaxBy(m => m.Mobs) is { Mobs: > 0 } busiest) AddTile("Most mobs", $"{busiest.Mobs:N0}", busiest.Name);
-        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, $"{(best.Value.Estimated ? "~" : "")}{LootSummary.Coin(best.Value.Each)} each · {best.Count:N0} taken");
+        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
         if (t.Share > 0) AddTile("Your splits", LootSummary.Coin(t.Share), "your share of the purses", Palette.Heal);
 
         Tabs(["Looters", "Items", "Mobs", "Drop rates", "Loot log"], tab => tab switch
@@ -625,7 +625,8 @@ public partial class LootHistoryPage : UserControl
             _ => Log(d.Events),
         }, tab => tab == "Items"
             ? [("Copy summary", () => LootSummary.Breakdown(d.Day, d.Events, values: _store.Values)), ("Copy items", () => LootSummary.ItemsText(d.Day, NameSearch.Filter(d.ItemsWorth, i => i.Item, _searches.GetValueOrDefault("items", "")), ScopeText()))]
-            : [("Copy summary", () => LootSummary.Breakdown(d.Day, d.Events, values: _store.Values))]);
+            : [("Copy summary", () => LootSummary.Breakdown(d.Day, d.Events, values: _store.Values))],
+        tab => tab == "Items" ? [CustomPricesAction()] : []);
     }
 
     private void RenderMember(LootDay day, LootMember m)
@@ -644,11 +645,11 @@ public partial class LootHistoryPage : UserControl
         // Purses are whole and known for anyone; what an autosplit gave a player is known only for the ledger's owner
         AddTile("Purses looted", LootSummary.Coin(m.Purses), Of(m.Purses, t.Copper));
         if (m.You) AddTile("Your coin", (m.EstimatedShares > 0 ? "~" : "") + LootSummary.Coin(m.Copper), m.Received > 0 ? $"{(m.EstimatedShares > 0 ? "~" : "")}{LootSummary.Coin(m.Received)} in splits" : "purses you kept", Palette.Heal);
-        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.Priced, m.Estimated, m.Unpriced));
+        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.Priced, m.Custom, m.Estimated, m.Unpriced));
         AddTile("Items", $"{m.Items:N0}", Of(m.Items, t.Items));
         AddTile("Coin per mob", m.Mobs > 0 ? LootSummary.Coin((long)m.CopperPerMob) : "—", m.Mobs > 0 && t.Mobs > 0 ? $"group {LootSummary.Coin(t.Copper / t.Mobs)}" : "");
         AddTile("Items per mob", m.Mobs > 0 ? m.ItemsPerMob.ToString("0.0", CultureInfo.CurrentCulture) : "—", t.Mobs > 0 ? $"group {(double)t.Items / t.Mobs:0.0}" : "");
-        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, $"{(best.Value.Estimated ? "~" : "")}{LootSummary.Coin(best.Value.Each)} each · {best.Count:N0} taken");
+        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
         if (m.Split > 0) AddTile("Your splits", LootSummary.Coin(m.Split), "from their purses", Palette.Heal);
 
         Tabs(["Items", "Mobs", "Loot log"], tab => tab switch
@@ -656,12 +657,12 @@ public partial class LootHistoryPage : UserControl
             "Items" => MemberItemsTable(m),
             "Mobs" => MemberMobsTable(m),
             _ => Log(day.Events.Where(e => e.Who.Equals(m.Name, StringComparison.OrdinalIgnoreCase))),
-        }, _ => [("Copy summary", () => LootSummary.MemberText(m))]);
+        }, _ => [("Copy summary", () => LootSummary.MemberText(m))], tab => tab == "Items" ? [CustomPricesAction()] : []);
     }
 
     // ---- Drop rates ---------------------------------------------------------------------------------------------
 
-    private (long Version, DropRatesView View)? _drops;
+    private (string SelectionKey, int Events, DropRatesView View)? _drops;
 
     /// <summary>
     /// How often each item comes off each kind of monster, over every day of this character's ledger (a bigger sample than one day).
@@ -669,21 +670,46 @@ public partial class LootHistoryPage : UserControl
     /// </summary>
     private DropRatesView DropRatesFor()
     {
-        if (_drops is not { } cached || cached.Version != _store.Version)
+        var key = _store.SelectionKey;
+        var days = _store.Days();
+        int count = days.Sum(day => _store.Events(day).Count);
+        if (_drops is not { } cached || cached.SelectionKey != key || cached.Events != count)
         {
-            var all = _store.Days().SelectMany(day => _store.Events(day)).ToList();
-            _drops = (_store.Version, new DropRatesView(DropRates.ByMob(all), _store.Values));
+            var all = days.SelectMany(day => _store.Events(day)).ToList();
+            _drops = (key, count, new DropRatesView(DropRates.ByMob(all), _store.Values, _store));
+        }
+        else
+        {
+            cached.View.SetValues(_store.Values);
         }
         return _drops.Value.View;
     }
 
     // ---- Pieces -------------------------------------------------------------------------------------------------
 
-    /// <summary>"8 priced · 3 estimated · 2 unpriced": how the value of the items is known.</summary>
-    private static string ItemsNote(int priced, int estimated, int unpriced)
+    /// <summary>"8 priced · 2 custom · 3 estimated · 2 unpriced": how the value of the items is known.</summary>
+    private static string ItemsNote(int priced, int custom, int estimated, int unpriced)
     {
-        var parts = new[] { priced > 0 ? $"{priced:N0} priced" : "", estimated > 0 ? $"{estimated:N0} estimated" : "", unpriced > 0 ? $"{unpriced:N0} unpriced" : "" }.Where(x => x.Length > 0).ToList();
+        int vendor = priced - custom;
+        var parts = new[]
+        {
+            vendor > 0 ? $"{vendor:N0} priced" : "",
+            custom > 0 ? $"{custom:N0} custom" : "",
+            estimated > 0 ? $"{estimated:N0} estimated" : "",
+            unpriced > 0 ? $"{unpriced:N0} unpriced" : "",
+        }.Where(x => x.Length > 0).ToList();
         return parts.Count == 0 ? "no items" : string.Join(" · ", parts);
+    }
+
+    private static string BestTip(ItemValue v, int count) =>
+        v.Custom ? $"{LootSummary.Coin(v.Each)} each (custom) · {count:N0} taken"
+        : $"{(v.Estimated ? "~" : "")}{LootSummary.Coin(v.Each)} each · {count:N0} taken";
+
+    private (string Label, string Tip, Action Click) CustomPricesAction()
+    {
+        int n = _store.CustomPrices.Count;
+        return (n > 0 ? $"Custom prices ({n:N0})…" : "Custom prices…", "Set, change or clear custom item prices",
+            () => CustomPricesWindow.Open(Window.GetWindow(this), _store));
     }
 
     private void AddTile(string label, string value, string sub, Brush? accent = null)
@@ -699,13 +725,20 @@ public partial class LootHistoryPage : UserControl
         Tiles.Children.Add(new Border { Style = (Style)FindResource("Tile"), Child = stack });
     }
 
-    private void Tabs(IReadOnlyList<string> tabs, Func<string, FrameworkElement> content, Func<string, (string Label, Func<string> Text)[]>? copies = null)
+    private void Tabs(IReadOnlyList<string> tabs, Func<string, FrameworkElement> content, Func<string, (string Label, Func<string> Text)[]>? copies = null,
+        Func<string, (string Label, string Tip, Action Click)[]>? actions = null)
     {
         if (!tabs.Contains(_tab)) _tab = tabs[0];
         TabHost.Visibility = Visibility.Visible;
         void FillCopies(string tab)
         {
             CopyBar.Children.Clear();
+            foreach (var (label, tip, click) in actions?.Invoke(tab) ?? [])
+            {
+                var b = new Button { Content = label, Style = (Style)FindResource("TextButton"), Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4), ToolTip = tip };
+                b.Click += (_, _) => click();
+                CopyBar.Children.Add(b);
+            }
             foreach (var (label, text) in copies?.Invoke(tab) ?? [])
             {
                 var b = new Button { Content = label, Style = (Style)FindResource("TextButton"), Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4), ToolTip = "Copy to the clipboard as text" };
@@ -763,7 +796,7 @@ public partial class LootHistoryPage : UserControl
             new("Player", 0, m => m.ClassLevel.Length > 0 ? $"{m.Name} · {m.ClassLevel}" : m.Name, m => m.Name, Right: false),
             new("Mobs", 56, m => $"{m.Mobs:N0}", m => m.Mobs, Tip: "Corpses they took loot from"),
             new("Items", 56, m => m.Items == 0 && m.Unrecorded > 0 ? "—" : $"{m.Items:N0}{(m.Unrecorded > 0 ? "+" : "")}", m => m.Items, Tip: "+ = the ledger left out the items of some of their corpses (a monster with an apostrophe in its name)"),
-            new("Items worth", 106, m => m.ItemValue > 0 || m.Unpriced > 0 || m.Unrecorded > 0 ? LootSummary.ItemsWorthOf(m) : "—", m => m.ItemValue,
+            new("Items worth", 106, m => m.ItemValue > 0 || m.Priced > 0 || m.Estimated > 0 || m.Unpriced > 0 || m.Unrecorded > 0 ? LootSummary.ItemsWorthOf(m) : "—", m => m.ItemValue,
                 Tip: "What a vendor would pay for their items. ~ = some valued by their family, + = some with no known price (not counted)"),
             new("Share", 60, m => Fmt.Pct(m.ItemValue / total), m => m.ItemValue, Tip: "Of the items worth looted in all"),
             new("Coin / mob", 92, m => m.Mobs > 0 ? LootSummary.Coin((long)m.CopperPerMob) : "—", m => m.CopperPerMob, Tip: "What the purses they looted held a mob, whole"),
@@ -775,14 +808,32 @@ public partial class LootHistoryPage : UserControl
         {
             new("Item", 0, i => i.Item, i => i.Item, Right: false),
             new("Taken", 60, i => $"{i.Count:N0}", i => i.Count),
-            new("Each", 84, i => i.Value.Known ? (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Value.Each) : "—", i => i.Value.Each,
-                Tip: "What a vendor pays for one. ~ = valued by its family; — = no price known yet (sell one to a vendor to learn it)"),
+            new("Each", 92, i => EachText(i.Value), i => i.Value.Each,
+                Tip: "What one is worth (vendor sale, ~ family estimate, or your custom price). Click or right-click a row to set a custom price."),
             new("Worth", 100, i => i.Value.Known ? (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total) : "—", i => i.Total),
             new("Looters", 62, i => $"{i.By.Count:N0}", i => i.By.Count),
             new("Taken by", 270, i => string.Join(", ", i.By.Take(4).Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who)) + (i.By.Count > 4 ? $" +{i.By.Count - 4}" : ""),
                 Right: false),
         }, Rebuild, defaultSort: 3, bar: i => i.Total, color: _ => Palette.You,
-        rowTip: i => string.Join("\n", i.By.Select(b => $"{b.Who}: {b.Count}")), copy: LootSummary.ItemLine));
+        click: i => CustomPriceDialog.Open(Window.GetWindow(this), _store, i.Item),
+        rowTip: i => ItemRowTip(i.Item, i.Value, string.Join("\n", i.By.Select(b => $"{b.Who}: {b.Count}"))),
+        copy: LootSummary.ItemLine,
+        menu: i => PriceMenu.For(this, _store, i.Item)));
+
+    private static string EachText(ItemValue v) => !v.Known ? "—" : (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each);
+
+    private string ItemRowTip(string item, ItemValue value, string detail)
+    {
+        var lines = new List<string>();
+        if (value.Custom)
+        {
+            var natural = _store.Values.NaturalOf(item);
+            lines.Add($"Custom price: {LootSummary.Coin(value.Each)} each" + (natural.Known ? $" (vendor {(natural.Estimated ? "~" : "")}{LootSummary.Coin(natural.Each)})" : ""));
+        }
+        if (detail.Length > 0) lines.Add(detail);
+        lines.Add("Click or right-click to set a custom price");
+        return string.Join("\n", lines);
+    }
 
     /// <summary>
     /// A table with a search box over it (<see cref="Table.Searchable"/>), or the bare table when <paramref name="search"/> is false. What is typed is
@@ -808,13 +859,17 @@ public partial class LootHistoryPage : UserControl
         {
             new("Item", 0, i => i.Item, i => i.Item, Right: false),
             new("Taken", 60, i => $"{i.Count:N0}", i => i.Count),
-            new("Each", 84, i => i.Value.Known ? (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Value.Each) : "—", i => i.Value.Each,
-                Tip: "What a vendor pays for one. ~ = valued by its family; — = no price known yet"),
+            new("Each", 92, i => EachText(i.Value), i => i.Value.Each,
+                Tip: "What one is worth (vendor sale, ~ family estimate, or your custom price). Click or right-click a row to set a custom price."),
             new("Worth", 100, i => i.Value.Known ? (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total) : "—", i => i.Total),
             new("Group share", 104, i => i.GroupCount > i.Count ? $"{Fmt.Pct(i.Share)} of {i.GroupCount:N0}" : "all of them", i => i.Share,
                 Tip: "How many of that item the group took, and how many of those this player took"),
             new("Mostly from", 200, i => i.MostlyFrom, i => i.MostlyFrom, Right: false),
-        }, Rebuild, defaultSort: 3, bar: i => i.Total, color: _ => BrushOf(m), copy: LootSummary.MemberItemLine));
+        }, Rebuild, defaultSort: 3, bar: i => i.Total, color: _ => BrushOf(m),
+        click: i => CustomPriceDialog.Open(Window.GetWindow(this), _store, i.Item),
+        rowTip: i => ItemRowTip(i.Item, i.Value, i.MostlyFrom.Length > 0 ? $"Mostly from {i.MostlyFrom}" : ""),
+        copy: LootSummary.MemberItemLine,
+        menu: i => PriceMenu.For(this, _store, i.Item)));
 
     /// <summary>A player's monsters; with <paramref name="coin"/> off (the answer to a search, which is about items) the purse columns are left out.</summary>
     private FrameworkElement MemberMobsTable(LootMember m, bool coin = true) =>
@@ -837,14 +892,14 @@ public partial class LootHistoryPage : UserControl
                     new("Per corpse", 86, x => x.ItemsEach.ToString("0.0", CultureInfo.CurrentCulture), x => x.ItemsEach),
                 }, Rebuild, bar: x => x.Looted, color: _ => BrushOf(m)));
 
-    private sealed record LogRow(DateTime Time, string Who, string What, string From, Brush Brush);
+    private sealed record LogRow(DateTime Time, string Who, string What, string From, Brush Brush, string Item = "");
 
     /// <summary>The loot lines, newest first, with a search box over them; <paramref name="withDate"/> when they can be from several days.</summary>
     private FrameworkElement Log(IEnumerable<LootEvent> events, bool withDate = false)
     {
         var all = events.OrderByDescending(e => e.Time).Select(e => new LogRow(e.Time, e.Who,
             e.Kind == LootKind.Item ? $"[{e.Item}]" + (e.Count > 1 ? $" ×{e.Count}" : "") : LootSummary.Coin(e.Copper) + (e.Shared ? (e.Split > 0 ? $"  (split · your share {LootSummary.Coin(e.Split)})" : "  (split)") : ""),
-            e.Source, e.Kind == LootKind.Item ? Palette.Text : Palette.Heal)).ToList();
+            e.Source, e.Kind == LootKind.Item ? Palette.Text : Palette.Heal, e.Kind == LootKind.Item ? e.Item : "")).ToList();
         return Searchable("log", "Search the log by looter, item or monster", true, all, r => $"{r.Who} {r.What} {r.From}", shown =>
         {
             var table = Table.Build("loot-log", shown.Take(LogRows).ToList(), new Col<LogRow>[]
@@ -853,7 +908,7 @@ public partial class LootHistoryPage : UserControl
                 new("Looter", 150, r => r.Who, r => r.Who, Right: false),
                 new("Loot", 0, r => r.What, r => r.What, Right: false),
                 new("From", 240, r => r.From, r => r.From, Right: false),
-            }, Rebuild, defaultSort: 0);
+            }, Rebuild, defaultSort: 0, menu: r => r.Item.Length > 0 ? PriceMenu.For(this, _store, r.Item) : null);
             var panel = new StackPanel();
             panel.Children.Add(new TextBlock
             {

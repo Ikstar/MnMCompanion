@@ -148,7 +148,7 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
 
     // ------------------------------------------------------------------ reading
 
-    private string KeyNow() => Session.Key + "|" + Store.SelectionKey + "|" + (Data?.Version ?? -1);
+    private string KeyNow() => Session.Key + "|" + Store.SelectionKey + "|" + (Data?.Version ?? -1) + "|" + Store.Version;
 
     private Context? Capture()
     {
@@ -255,8 +255,8 @@ internal abstract class StatsPanel<T> : Border, IMiniPage where T : class
 
     protected void OpenInHistory() => _openHistory(_historyKey);
 
-    protected FrameworkElement RankRow(int rank, string name, string sub, string value, Brush brush, double fraction, string tip) =>
-        LootPanel.Row(rank, name, sub, value, brush, fraction, tip, OpenInHistory);
+    protected FrameworkElement RankRow(int rank, string name, string sub, string value, Brush brush, double fraction, string tip, Func<ContextMenu?>? menu = null) =>
+        LootPanel.Row(rank, name, sub, value, brush, fraction, tip, OpenInHistory, menu: menu);
 
     protected static TextBlock LogLine(params (string Text, Brush Brush, bool Bold)[] parts)
     {
@@ -486,7 +486,8 @@ internal sealed class HarvestMini(LootStore store, HistoryData? data, SessionSco
         var v = Store.Values.Of(i.Item);
         var worth = v.Known ? (v.Estimated ? "~" : "") + Coin(v.Each * i.Units) : "";
         return RankRow(rank, i.Item, worth.Length > 0 ? $"worth {worth}" : Plural(i.Harvests, "harvest"), "×" + i.Units.ToString("N0"), Palette.Heal, i.Units / top,
-            $"{Plural(i.Harvests, "harvest")} · {string.Join(", ", i.Zones.Select(ZoneMaps.DisplayName))}");
+            $"{Plural(i.Harvests, "harvest")} · {string.Join(", ", i.Zones.Select(ZoneMaps.DisplayName))}",
+            menu: () => PriceMenu.For(this, Store, i.Item));
     }
 
     private void Log(IReadOnlyList<HarvestRow> rows)

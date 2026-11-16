@@ -16,7 +16,8 @@ internal sealed class DropRatesView : UserControl
 {
     private readonly IReadOnlyList<MobDrops> _mobs;
     private readonly IReadOnlyList<DroppedItem> _items;
-    private readonly ItemValues _values;
+    private readonly LootStore? _store;
+    private ItemValues _values;
     private bool _byItem;
     private MobDrops? _mob;
     private DroppedItem? _item;
@@ -28,10 +29,19 @@ internal sealed class DropRatesView : UserControl
     private readonly Dictionary<string, CommunityPrices?> _communityPrices = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _asking = new(StringComparer.OrdinalIgnoreCase);
 
-    public DropRatesView(IReadOnlyList<MobDrops> mobs, ItemValues values)
+    public DropRatesView(IReadOnlyList<MobDrops> mobs, ItemValues values, LootStore? store = null)
     {
         _mobs = mobs;
         _items = DropRates.ByItem(mobs);
+        _values = values;
+        _store = store;
+        Build();
+    }
+
+    /// <summary>Updates displayed item values (for example after a custom price change) without losing the open view.</summary>
+    public void SetValues(ItemValues values)
+    {
+        if (ReferenceEquals(_values, values)) return;
         _values = values;
         Build();
     }
@@ -49,12 +59,27 @@ internal sealed class DropRatesView : UserControl
     private void Build()
     {
         var root = new StackPanel();
-        var top = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var top = new DockPanel { Margin = new Thickness(0, 0, 0, 8), LastChildFill = false };
         if (_mob is not null || _item is not null)
         {
             var back = new Button { Content = _byItem ? "←  All items" : "←  All monsters", Style = (Style)Ui.Theme["TextButton"], Padding = new Thickness(10, 4, 10, 4), HorizontalAlignment = HorizontalAlignment.Left };
             back.Click += (_, _) => { _mob = null; _item = null; Build(); };
+            DockPanel.SetDock(back, Dock.Left);
             top.Children.Add(back);
+            if (_item is { } opened && _store is not null)
+            {
+                bool hasCustom = _store.CustomPrices.TryGet(opened.Item, out var c);
+                var priceBtn = new Button
+                {
+                    Content = hasCustom ? $"Custom price: {LootSummary.Coin(c)}…" : "Set custom price…",
+                    Style = (Style)Ui.Theme["TextButton"],
+                    Padding = new Thickness(10, 4, 10, 4),
+                    ToolTip = "Set, change or clear your custom price for this item",
+                };
+                priceBtn.Click += (_, _) => CustomPriceDialog.Open(Window.GetWindow(this), _store, opened.Item);
+                DockPanel.SetDock(priceBtn, Dock.Right);
+                top.Children.Add(priceBtn);
+            }
         }
         else
         {
@@ -68,6 +93,7 @@ internal sealed class DropRatesView : UserControl
                 row.Children.Add(rb);
             }
             seg.Child = row;
+            DockPanel.SetDock(seg, Dock.Left);
             top.Children.Add(seg);
         }
         root.Children.Add(top);
@@ -126,7 +152,8 @@ internal sealed class DropRatesView : UserControl
         if (theirs is not null)
             columns.Insert(2, new Col<DropItem>("Community", 96, d => theirs.TryGetValue(d.Item, out var c) ? Fmt.Pct(c.Share) : "—", d => theirs.TryGetValue(d.Item, out var c) ? c.Share : -1.0,
                 Tip: "The middle of the community players' shares of this monster's corpses that gave the item. — = no player has it"));
-        panel.Children.Add(Table.Build(theirs is null ? "drop-mob-items" : "drop-mob-items-community", m.Drops, columns.ToArray(), Build, defaultSort: 1, bar: d => d.Share, color: _ => Palette.Heal));
+        panel.Children.Add(Table.Build(theirs is null ? "drop-mob-items" : "drop-mob-items-community", m.Drops, columns.ToArray(), Build, defaultSort: 1, bar: d => d.Share, color: _ => Palette.Heal,
+            menu: _store is null ? null : d => PriceMenu.For(this, _store, d.Item)));
         return panel;
     }
 
@@ -140,14 +167,17 @@ internal sealed class DropRatesView : UserControl
             new("Monsters", 80, i => $"{i.Sources.Count:N0}", i => i.Sources.Count, Tip: "Kinds of monster it has come off"),
             new("Likeliest source", 300, i => $"{i.Sources[0].Mob}  {Fmt.Pct(i.Sources[0].Share)}{(i.Sources[0].Few ? " *" : "")}", i => i.Sources[0].Share, Right: false),
             new("Each", 90, i => Each(i.Item), i => _values.Of(i.Item).Each, Tip: "What a vendor pays for one"),
-        }, Build, defaultSort: 1, bar: i => i.Corpses, color: _ => Palette.You, click: i => { _item = i; Build(); }));
+        }, Build, defaultSort: 1, bar: i => i.Corpses, color: _ => Palette.You, click: i => { _item = i; Build(); },
+        menu: _store is null ? null : i => PriceMenu.For(this, _store, i.Item)));
     }
 
     private FrameworkElement ItemDetail(DroppedItem item)
     {
         var panel = new StackPanel();
         panel.Children.Add(Title(item.Item, "comes off"));
-        panel.Children.Add(Line($"{item.Corpses:N0} looted corpses in all · {item.Sources.Count:N0} kinds of monster · a vendor pays {Each(item.Item)}"));
+        var val = _values.Of(item.Item);
+        var priceText = val.Custom ? $"your custom price is {LootSummary.Coin(val.Each)}" : $"a vendor pays {Each(item.Item)}";
+        panel.Children.Add(Line($"{item.Corpses:N0} looted corpses in all · {item.Sources.Count:N0} kinds of monster · {priceText}"));
         if (CommunityPrice(item.Item) is { } sold)
             panel.Children.Add(Line($"Community: vendors pay a middle price of {LootSummary.Coin(sold.Median)} for one ({LootSummary.Coin(sold.Low)} to {LootSummary.Coin(sold.High)} between players), from {sold.Contributors:N0} players."));
         panel.Children.Add(Table.Build("drop-item-sources", item.Sources, new Col<DropSource>[]

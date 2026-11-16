@@ -37,7 +37,8 @@ internal sealed class PanelWindow : Window
     private readonly Border _banner = new() { Visibility = Visibility.Collapsed };
     private readonly UpdateController? _updates;
     private readonly DispatcherTimer _timer;
-    private bool _busy;
+    private bool _busy, _closing;
+    private long _customShown;
     private readonly string? _recipesFile, _marketFile;
     private readonly Dictionary<string, PageWindow> _pageWindows = [];
 
@@ -168,12 +169,27 @@ internal sealed class PanelWindow : Window
             ShowBanner();
         }
 
+        _customShown = store.CustomPrices.Version;
+        void OnCustomPricesChanged() => Dispatcher.BeginInvoke(() =>
+        {
+            if (_closing) return;
+            _store.SyncCustom();
+            if (_customShown == _store.CustomPrices.Version) return;
+            _customShown = _store.CustomPrices.Version;
+            _panel.Refresh();
+            if (_page != "Loot") Active.Refresh();
+            foreach (var window in _pageWindows.Values.ToList()) window.Refresh();
+        });
+        store.CustomPrices.Changed += OnCustomPricesChanged;
+
         LocationChanged += (_, _) => Remember();
         SizeChanged += (_, _) => Remember();
         Closed += (_, _) =>
         {
+            _closing = true;
             _timer?.Stop();
             _map.Dispose();
+            store.CustomPrices.Changed -= OnCustomPricesChanged;
             if (_updates is not null) _updates.Changed -= ShowBanner;
         };
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -383,6 +399,7 @@ internal sealed class PanelWindow : Window
             changed |= StartSessionOnJoin();
             if (changed || force)
             {
+                _customShown = _store.CustomPrices.Version;
                 _panel.Refresh();
                 if (_page != "Loot") Active.Refresh();
                 foreach (var window in _pageWindows.Values.ToList()) window.Refresh();
@@ -473,6 +490,15 @@ internal sealed class PanelWindow : Window
         };
         market.Click += (_, _) => { _settings.MarketOnline = market.IsChecked; _settings.Save(); _market.Refresh(); };
         menu.Items.Add(market);
+        int customCount = _store.CustomPrices.Count;
+        var customPrices = new MenuItem
+        {
+            Header = customCount > 0 ? $"Custom loot prices ({customCount:N0})…" : "Custom loot prices…",
+            ToolTip = "Set, change or clear custom prices for looted items (used instead of vendor prices)",
+        };
+        customPrices.Click += (_, _) => CustomPricesWindow.Open(this, _store);
+        menu.Items.Add(customPrices);
+        menu.Items.Add(new Separator());
         var ledgerFolder = new MenuItem { Header = "Open the ledger folder", ToolTip = "Opens the folder where the game keeps this character's ledger files (one a day for the character, one for the party)." };
         ledgerFolder.Click += (_, _) => _panel.OpenFolder();
         menu.Items.Add(ledgerFolder);

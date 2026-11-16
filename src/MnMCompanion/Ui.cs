@@ -344,7 +344,7 @@ public static class Table
 
     public static FrameworkElement Build<T>(string id, IEnumerable<T> rows, IReadOnlyList<Col<T>> cols, Action rebuild,
         Func<T, double>? bar = null, Func<T, Brush>? color = null, Action<T>? click = null, int defaultSort = 1,
-        Func<T, string?>? rowTip = null, Func<T, string>? copy = null)
+        Func<T, string?>? rowTip = null, Func<T, string>? copy = null, Func<T, ContextMenu?>? menu = null)
     {
         var (sortCol, desc) = SortState.GetValueOrDefault(id, (defaultSort, true));
         var list = rows.ToList();
@@ -440,6 +440,11 @@ public static class Table
             {
                 rowBorder.Cursor = Cursors.Hand;
                 rowBorder.MouseLeftButtonUp += (_, _) => click(item);
+            }
+            if (menu != null)
+            {
+                var row = item;
+                PriceMenu.Attach(rowBorder, () => menu(row));
             }
             panel.Children.Add(rowBorder);
         }

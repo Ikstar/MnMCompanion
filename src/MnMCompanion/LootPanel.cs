@@ -216,7 +216,7 @@ internal sealed class LootPanel : Border, IMiniPage
         _total.Text = LootSummary.Worth(d.Total, d.Approximate, d.Unpriced > 0 || d.Unrecorded > 0);
         _totalNote.Text = $"coin {LootSummary.Coin(totals.Copper)} + items {LootSummary.Worth(d.ItemValue, d.Approximate, d.Unrecorded > 0)}";
         _totalBlock.ToolTip = $"Everyone's: coin {LootSummary.Coin(totals.Copper)} (every purse counted once, whole) plus what a vendor would pay for the items: {LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0)}" + Environment.NewLine +
-                              $"{d.Priced:N0} items priced from your vendor sales, {d.Estimated:N0} valued by their family (~), {d.Unpriced:N0} with no known price (not counted, +)" + Environment.NewLine + Click + _coinLine;
+                              $"{d.Priced - d.Custom:N0} items priced from vendor sales" + (d.Custom > 0 ? $", {d.Custom:N0} at your custom prices" : "") + $", {d.Estimated:N0} valued by their family (~), {d.Unpriced:N0} with no known price (not counted, +)" + Environment.NewLine + Click + _coinLine;
         _ours.Text = mine ? LootSummary.Worth(ours.Total, ours.Approximate, ours.Unpriced > 0 || ours.Unrecorded > 0) : "—";
         _oursNote.Text = mine ? $"coin {(ours.EstimatedShares > 0 ? "~" : "")}{LootSummary.Coin(ours.Copper)} + items {LootSummary.Worth(ours.ItemValue, ours.Estimated > 0, ours.Unrecorded > 0)}" : "nothing of yours yet";
         _oursBlock.ToolTip = mine
@@ -244,7 +244,7 @@ internal sealed class LootPanel : Border, IMiniPage
             : _note.Length > 0 ? _note
             : _compact ? ""
             : d.Unrecorded > 0 ? $"{Plural(d.Unrecorded, "corpse")}: items missing from the ledger (names with an apostrophe)"
-            : d.Unpriced > 0 ? $"{Plural(d.Unpriced, "item")} unpriced (+): sell one to price it"
+            : d.Unpriced > 0 ? $"{Plural(d.Unpriced, "item")} unpriced (+): right-click on Items to price, or sell one"
             : "");
         _note = "";
         _status.ToolTip = !_compact && d.Unrecorded > 0 ? Unrecorded : null;
@@ -343,6 +343,26 @@ internal sealed class LootPanel : Border, IMiniPage
 
     private void ShowItems(LootDay d)
     {
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        int customCount = _store.CustomPrices.Count;
+        var manage = new Button
+        {
+            Content = customCount > 0 ? $"Custom ({customCount:N0})" : "Custom prices",
+            Style = (Style)Ui.Theme["TextButton"],
+            Padding = new Thickness(9, 3, 9, 3),
+            Margin = new Thickness(4, 0, 0, 0),
+            ToolTip = "View, add or change custom item prices (or right-click any item below)",
+        };
+        manage.Click += (_, _) => CustomPricesWindow.Open(Window.GetWindow(this), _store);
+        actions.Children.Add(manage);
+        if (d.ItemsWorth.Count > 0)
+        {
+            var copy = (Button)CopyBar("Copy items", "the items", () => LootSummary.ItemsText(Day, d.ItemsWorth, _session.ScopeLabel()));
+            copy.Margin = new Thickness(4, 0, 0, 0);
+            actions.Children.Add(copy);
+        }
+        _copyHost.Child = actions;
+
         if (d.ItemsWorth.Count == 0) { _body.Children.Add(Line("No items looted.", Palette.Muted)); return; }
         double top = Math.Max(1, d.ItemsWorth.Max(i => (double)i.Total));
         int rank = 0;
@@ -355,19 +375,35 @@ internal sealed class LootPanel : Border, IMiniPage
     private FrameworkElement ItemRow(int rank, ItemWorth i, double top)
     {
         var takers = string.Join(", ", i.By.Take(2).Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who)) + (i.By.Count > 2 ? $" +{i.By.Count - 2}" : "");
+        var sub = i.Value.Custom ? (takers.Length > 0 ? $"custom · {takers}" : "custom") : takers;
         var value = !i.Value.Known ? "—" : (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total);
-        var tip = (i.Value.Known
-                      ? $"{(i.Value.Estimated ? "about " : "")}{LootSummary.Coin(i.Value.Each)} each to a vendor ({SourceWord(i.Value.Source)})" + Environment.NewLine
-                      : "No known price: no vendor sale of it in your ledgers." + Environment.NewLine + "Sell one to a vendor and its price is learned." + Environment.NewLine)
-                  + string.Join(Environment.NewLine, i.By.Select(b => $"{b.Who}: {b.Count}"));
+        string priceTip;
+        if (i.Value.Custom)
+        {
+            var natural = _store.Values.NaturalOf(i.Item);
+            var natText = natural.Known ? $"; vendor {(natural.Estimated ? "~" : "")}{LootSummary.Coin(natural.Each)}" : "";
+            priceTip = $"{LootSummary.Coin(i.Value.Each)} each (your custom price{natText})" + Environment.NewLine + "Right-click to change or clear." + Environment.NewLine;
+        }
+        else if (i.Value.Known)
+        {
+            priceTip = $"{(i.Value.Estimated ? "about " : "")}{LootSummary.Coin(i.Value.Each)} each to a vendor ({SourceWord(i.Value.Source)})" + Environment.NewLine + "Right-click to set a custom price." + Environment.NewLine;
+        }
+        else
+        {
+            priceTip = "No known price: no vendor sale of it in your ledgers." + Environment.NewLine + "Right-click to set a custom price, or sell one to a vendor." + Environment.NewLine;
+        }
+        var tip = priceTip + string.Join(Environment.NewLine, i.By.Select(b => $"{b.Who}: {b.Count}"));
         var item = i;
-        return Row(rank, i.Count > 1 ? $"{i.Item} ×{i.Count}" : i.Item, takers, value, Palette.You, i.Total / top, tip, () => _openBreakdown(Day, null, ActiveSession()),
-            copy: () => LootSummary.ItemLine(item));
+        return Row(rank, i.Count > 1 ? $"{i.Item} ×{i.Count}" : i.Item, sub, value, Palette.You, i.Total / top, tip, () => _openBreakdown(Day, null, ActiveSession()),
+            copy: () => LootSummary.ItemLine(item), menu: () => PriceMenu.For(this, _store, item.Item));
     }
 
     private static string SourceWord(Loot.ValueSource s) => s switch
     {
+        Loot.ValueSource.Custom => "your custom price",
         Loot.ValueSource.Sold => "what vendors paid you",
+        Loot.ValueSource.Public => "public price list",
+        Loot.ValueSource.Charged => "from vendor stock price",
         Loot.ValueSource.Estimated => "from items of the same family",
         _ => "unknown",
     };
@@ -397,7 +433,11 @@ internal sealed class LootPanel : Border, IMiniPage
             var row = new TextBlock { FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(2, 2, 0, 2), ToolTip = Tip(e) };
             row.Inlines.Add(new Run(e.Time.ToString("HH:mm:ss") + "  ") { Foreground = Palette.Muted });
             row.Inlines.Add(new Run(e.Who + "  ") { Foreground = e.You ? Palette.You : Palette.Text, FontWeight = e.You ? FontWeights.SemiBold : FontWeights.Normal });
-            if (e.Kind == LootKind.Item) row.Inlines.Add(new Run($"[{e.Item}]" + (e.Count > 1 ? $" ×{e.Count}" : "")) { Foreground = Palette.Gold });
+            if (e.Kind == LootKind.Item)
+            {
+                row.Inlines.Add(new Run($"[{e.Item}]" + (e.Count > 1 ? $" ×{e.Count}" : "")) { Foreground = Palette.Gold });
+                PriceMenu.Attach(row, _store, e.Item);
+            }
             else row.Inlines.Add(new Run(LootSummary.Coin(e.Copper)) { Foreground = Palette.Heal });
             row.Inlines.Add(new Run($"  ← {e.Source}") { Foreground = Palette.Muted });
             if (e.Kind == LootKind.Coin && e.Shared) row.Inlines.Add(new Run(e.Split > 0 ? $"  (split · your share {LootSummary.Coin(e.Split)})" : "  (split)") { Foreground = Palette.Muted });
@@ -414,7 +454,7 @@ internal sealed class LootPanel : Border, IMiniPage
         }.Where(s => s.Length > 0));
 
     /// <summary>One ranked row in the meter's style: a bar behind it sized to its value, a stripe in the row's colour, rank, name, a muted note and the value.</summary>
-    internal static FrameworkElement Row(int rank, string name, string sub, string value, Brush brush, double fraction, string tip, Action click, Func<string>? copy = null)
+    internal static FrameworkElement Row(int rank, string name, string sub, string value, Brush brush, double fraction, string tip, Action click, Func<string>? copy = null, Func<ContextMenu?>? menu = null)
     {
         var grid = new ClickRow { Height = 28, Margin = new Thickness(0, 2, 0, 2), Background = Brushes.Transparent, Cursor = Cursors.Hand, Activate = click };
         System.Windows.Automation.AutomationProperties.SetName(grid, name);
@@ -448,6 +488,7 @@ internal sealed class LootPanel : Border, IMiniPage
         grid.MouseEnter += (_, _) => back.Background = (Brush)Ui.Theme["Hover"];
         grid.MouseLeave += (_, _) => back.Background = (Brush)Ui.Theme["Subtle"];
         grid.MouseLeftButtonUp += (_, _) => click();
+        if (menu != null) PriceMenu.Attach(grid, menu);
         return grid;
     }
 

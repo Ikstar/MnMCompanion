@@ -55,6 +55,7 @@ internal abstract class HistoryPage<T> : UserControl, IHistoryPage where T : cla
     private T? _data;
     private string _who = "";
     private long _seen = -1;
+    private long _seenLoot = -1;
     private Period? _shownPeriod;
     private int _generation;
     private readonly string _emptyHint;
@@ -119,6 +120,7 @@ internal abstract class HistoryPage<T> : UserControl, IHistoryPage where T : cla
     {
         var who = Subject.Key;
         if (who != _who || Data.Version != _seen) Refresh();
+        else if (Store.Version != _seenLoot) { _seenLoot = Store.Version; Redraw(); }
     }
 
     public void PickTab(string tab)
@@ -166,6 +168,7 @@ internal abstract class HistoryPage<T> : UserControl, IHistoryPage where T : cla
         _data = data;
         _shownPeriod = period;
         _seen = version;
+        _seenLoot = Store.Version;
         _who = who;
         _message.Visibility = Visibility.Collapsed;
         _scroll.Visibility = Visibility.Visible;
@@ -225,13 +228,20 @@ internal abstract class HistoryPage<T> : UserControl, IHistoryPage where T : cla
         _tabContent.Content = new TextBlock { Text = _emptyHint, FontSize = 12.5, Foreground = Palette.Muted, TextWrapping = TextWrapping.Wrap, MaxWidth = 640, Margin = new Thickness(8, 6, 0, 0) };
     }
 
-    protected void Tabs(IReadOnlyList<string> tabs, Func<string, FrameworkElement> content, Func<string, (string Label, Func<string> Text)[]>? copies = null)
+    protected void Tabs(IReadOnlyList<string> tabs, Func<string, FrameworkElement> content, Func<string, (string Label, Func<string> Text)[]>? copies = null,
+        Func<string, (string Label, string Tip, Action Click)[]>? actions = null)
     {
         _tabHost.Visibility = tabs.Count > 1 ? Visibility.Visible : Visibility.Collapsed;   // one tab needs no tab bar
         if (!tabs.Contains(_tab)) _tab = tabs[0];
         void FillCopies(string tab)
         {
             _copyBar.Children.Clear();
+            foreach (var (label, tip, click) in actions?.Invoke(tab) ?? [])
+            {
+                var b = new Button { Content = label, Style = (Style)FindResource("TextButton"), Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4), ToolTip = tip };
+                b.Click += (_, _) => click();
+                _copyBar.Children.Add(b);
+            }
             foreach (var (label, text) in copies?.Invoke(tab) ?? [])
             {
                 var b = new Button { Content = label, Style = (Style)Ui.Theme["TextButton"], Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4), ToolTip = "Copy to the clipboard as text" };

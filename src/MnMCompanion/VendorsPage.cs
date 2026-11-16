@@ -39,7 +39,8 @@ internal sealed class VendorsPage(HistoryFocus focus, HistoryData data, HistoryV
             "Purchases" => Items(rows, VendorDirection.Bought),
             "Price book" => Book(data.Book),
             _ => Log(rows),
-        }, tab => [("Copy summary", () => Summary(t, rows))]);
+        }, tab => [("Copy summary", () => Summary(t, rows))],
+        tab => tab == "Price book" ? [(Store.CustomPrices.Count > 0 ? $"Custom prices ({Store.CustomPrices.Count:N0})…" : "Custom prices…", "Set, change or clear custom item prices", () => CustomPricesWindow.Open(Window.GetWindow(this), Store))] : []);
     }
 
     private FrameworkElement Items(List<VendorRow> rows, VendorDirection direction)
@@ -53,13 +54,14 @@ internal sealed class VendorsPage(HistoryFocus focus, HistoryData data, HistoryV
             new(sold ? "Paid each" : "Cost each", 92, i => i.Each > 0 ? LootSummary.Coin(i.Each) : "—", i => i.Each, Tip: "The middle price for one"),
             new("Total", 110, i => LootSummary.Coin(i.Total), i => i.Total),
             new(sold ? "Last sold" : "Last bought", 130, i => When(i.Last), i => i.Last, Right: false),
-        }, Rebuild, defaultSort: 4, bar: i => i.Total, color: _ => sold ? Palette.Heal : Palette.Taken);
+        }, Rebuild, defaultSort: 4, bar: i => i.Total, color: _ => sold ? Palette.Heal : Palette.Taken,
+        menu: i => PriceMenu.For(this, Store, i.Item));
     }
 
     private FrameworkElement Book(IReadOnlyList<PriceEntry> book)
     {
         var shown = book.Where(p => View.Matches(p.Item)).ToList();
-        var table = Table.Build("vendor-book", shown, new Col<PriceEntry>[]
+        var columns = new List<Col<PriceEntry>>
         {
             new("Item", 0, p => p.Item, p => p.Item, Right: false),
             new("Pays", 90, p => p.Median > 0 ? LootSummary.Coin(p.Median) : "—", p => p.Median, Tip: "What a vendor pays for one: the middle of every sale. This is the figure item values are worked out from"),
@@ -69,9 +71,17 @@ internal sealed class VendorsPage(HistoryFocus focus, HistoryData data, HistoryV
             new("Items sold", 80, p => $"{p.Units:N0}", p => p.Units),
             new("Last sold", 130, p => p.Samples == 0 ? "—" : p.Last.ToString("MMM d  HH:mm", CultureInfo.CurrentCulture), p => p.Last, Right: false),
             new("Costs", 90, p => p.BoughtMedian > 0 ? LootSummary.Coin(p.BoughtMedian) : "—", p => p.BoughtMedian, Tip: "What one cost when you bought it from a vendor"),
-        }, Rebuild, defaultSort: 1, bar: p => p.Median, color: _ => Palette.Gold,
-        copy: p => $"{p.Item}: vendors pay {LootSummary.Coin(p.Median)}" + (p.Min != p.Max ? $" ({LootSummary.Coin(p.Min)} to {LootSummary.Coin(p.Max)})" : "") + $", {p.Samples:N0} sales");
-        return WithNote("Every price this PC has seen: all your characters, all time, not just the period above. Sell one of an item to learn its price.", table);
+        };
+        if (Store.CustomPrices.Count > 0)
+            columns.Insert(2, new Col<PriceEntry>("Custom", 96,
+                p => Store.CustomPrices.TryGet(p.Item, out var c) ? LootSummary.Coin(c) : "—",
+                p => Store.CustomPrices.TryGet(p.Item, out var c) ? c : -1L,
+                Tip: "Your custom price for one, used instead of Pays when valuing loot"));
+        var table = Table.Build("vendor-book", shown, columns, Rebuild, defaultSort: 1, bar: p => p.Median, color: _ => Palette.Gold,
+        click: p => CustomPriceDialog.Open(Window.GetWindow(this), Store, p.Item),
+        copy: p => $"{p.Item}: vendors pay {LootSummary.Coin(p.Median)}" + (p.Min != p.Max ? $" ({LootSummary.Coin(p.Min)} to {LootSummary.Coin(p.Max)})" : "") + $", {p.Samples:N0} sales",
+        menu: p => PriceMenu.For(this, Store, p.Item));
+        return WithNote("Every price this PC has seen: all your characters, all time, not just the period above. Sell one of an item to learn its price, or click/right-click a row to set a custom price.", table);
     }
 
     private FrameworkElement Log(List<VendorRow> rows)

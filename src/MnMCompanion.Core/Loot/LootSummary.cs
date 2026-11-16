@@ -213,7 +213,9 @@ public static class LootSummary
     {
         var who = string.Join(", ", i.By.Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who));
         var mark = i.Value.Estimated ? "~" : "";
-        var price = i.Value.Known ? $"{mark}{Coin(i.Value.Each)} each  ·  {mark}{Coin(i.Total)}" : "no known price";
+        var price = !i.Value.Known ? "no known price"
+            : i.Value.Custom ? $"{Coin(i.Value.Each)} each (custom)  ·  {Coin(i.Total)}"
+            : $"{mark}{Coin(i.Value.Each)} each  ·  {mark}{Coin(i.Total)}";
         var people = i.By.Count == 1 ? "1 person" : $"{i.By.Count} people";
         return $"{i.Item}{(i.Count > 1 ? $" ×{i.Count}" : "")}  ·  looted by {people}{(who.Length > 0 ? $" ({who})" : "")}  ·  {price}";
     }
@@ -233,7 +235,9 @@ public static class LootSummary
     public static string MemberItemLine(MemberItem i)
     {
         var mark = i.Value.Estimated ? "~" : "";
-        var price = i.Value.Known ? $"{mark}{Coin(i.Value.Each)} each  ·  {mark}{Coin(i.Total)}" : "no known price";
+        var price = !i.Value.Known ? "no known price"
+            : i.Value.Custom ? $"{Coin(i.Value.Each)} each (custom)  ·  {Coin(i.Total)}"
+            : $"{mark}{Coin(i.Value.Each)} each  ·  {mark}{Coin(i.Total)}";
         return $"{i.Item}{(i.Count > 1 ? $" ×{i.Count}" : "")}  ·  {i.Count} of the group's {i.GroupCount}{(i.MostlyFrom.Length > 0 ? $"  ·  mostly from {i.MostlyFrom}" : "")}  ·  {price}";
     }
 
@@ -261,7 +265,7 @@ public static class LootSummary
         var t = Totals(events);
         sb.AppendLine($"{events.Min(e => e.Time):HH:mm} to {events.Max(e => e.Time):HH:mm}  ·  {Plural(t.Mobs, "mob")} looted  ·  {Plural(t.Items, "item")}  ·  {Plural(t.Players, "looter")}");
         var worth = LootDay.Of(day, events, values);
-        sb.AppendLine($"Purses {Coin(t.Copper)}" + (worth.ItemValue > 0 ? $"  ·  items {Worth(worth.ItemValue, worth.Estimated > 0, worth.Unpriced > 0)}  ·  total {Worth(worth.Total, worth.Estimated > 0, worth.Unpriced > 0)}" : "")
+        sb.AppendLine($"Purses {Coin(t.Copper)}" + (worth.ItemValue > 0 || worth.Priced > 0 || worth.Estimated > 0 ? $"  ·  items {Worth(worth.ItemValue, worth.Estimated > 0, worth.Unpriced > 0)}  ·  total {Worth(worth.Total, worth.Estimated > 0, worth.Unpriced > 0)}" : "")
             + (t.Share > 0 ? $"  ·  {Coin(t.Share)} reached you as splits" : ""));
         if (worth.Members.Any(m => m.You))
         {
@@ -275,7 +279,7 @@ public static class LootSummary
             worth.Members.Select(m => new[]
             {
                 m.Name + (m.You ? " (you)" : ""), m.ClassLevel, m.Mobs.ToString(), m.Items.ToString(),
-                m.ItemValue > 0 ? Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0) : "-",
+                m.ItemValue > 0 || m.Priced > 0 || m.Estimated > 0 ? Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0) : "-",
             }).ToList(),
             [false, false, true, true, true]);
 

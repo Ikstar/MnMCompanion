@@ -43,7 +43,8 @@ internal sealed class HarvestPage(HistoryFocus focus, HistoryData data, HistoryV
         AddTile("Worth", Worth(), unpriced ? "some unpriced" : estimated ? "includes estimates" : "at vendor prices");
         if (items.Count > 0) AddTile("Most gathered", items[0].Item, $"{items[0].Units:N0} items");
 
-        Tabs(["Items", "Log"], tab => tab == "Items" ? ItemsTable(items, totals) : Log(rows), tab => [("Copy summary", () => Summary(totals, items, Worth()))]);
+        Tabs(["Items", "Log"], tab => tab == "Items" ? ItemsTable(items, totals) : Log(rows), tab => [("Copy summary", () => Summary(totals, items, Worth()))],
+            tab => tab == "Items" ? [(Store.CustomPrices.Count > 0 ? $"Custom prices ({Store.CustomPrices.Count:N0})…" : "Custom prices…", "Set, change or clear custom item prices", () => CustomPricesWindow.Open(Window.GetWindow(this), Store))] : []);
     }
 
     private FrameworkElement ItemsTable(IReadOnlyList<HarvestItem> items, HarvestTotals totals) =>
@@ -54,11 +55,13 @@ internal sealed class HarvestPage(HistoryFocus focus, HistoryData data, HistoryV
             new("Items", 64, i => $"{i.Units:N0}", i => i.Units),
             new("Per hour", 74, i => totals.Active.TotalMinutes >= 1 ? (i.Units / totals.Active.TotalHours).ToString("N0", CultureInfo.CurrentCulture) : "—", i => i.Units,
                 Tip: "Items an hour over all the time spent gathering, so the rows add up to the total"),
-            new("Each", 84, i => Price(i.Item), i => Store.Values.Of(i.Item).Each, Tip: "What a vendor pays for one. ~ = estimated; — = no price known yet"),
+            new("Each", 92, i => Price(i.Item), i => Store.Values.Of(i.Item).Each, Tip: "What one is worth (vendor price, ~ estimated, or your custom price). Click or right-click a row to set a custom price"),
             new("Worth", 100, i => Store.Values.Of(i.Item) is { Known: true } v ? (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each * i.Units) : "—", i => Store.Values.Of(i.Item).Each * i.Units),
             new("Where", 220, i => string.Join(", ", i.Zones.Take(3)) + (i.Zones.Count > 3 ? $" +{i.Zones.Count - 3}" : ""), i => i.Zones.Count > 0 ? i.Zones[0] : "", Right: false),
             new("Last", 120, i => When(i.Last), i => i.Last, Right: false),
-        }, Rebuild, defaultSort: 2, bar: i => i.Units, color: _ => Palette.Heal);
+        }, Rebuild, defaultSort: 2, bar: i => i.Units, color: _ => Palette.Heal,
+        click: i => CustomPriceDialog.Open(Window.GetWindow(this), Store, i.Item),
+        menu: i => PriceMenu.For(this, Store, i.Item));
 
     private string Price(string item) => Store.Values.Of(item) is { Known: true } v ? (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each) : "—";
 

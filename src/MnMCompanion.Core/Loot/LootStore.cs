@@ -24,6 +24,8 @@ public sealed class LootStore
     private DateTime _pricesChecked;
     private bool _pricesChanged = true;
     private PublicPrices _public = PublicPrices.Empty;
+    private readonly CustomPrices _custom;
+    private long _customVersion;
     private bool _dirty;
     private long _version;
     private volatile Snapshot _snap = Nothing;
@@ -34,12 +36,16 @@ public sealed class LootStore
     /// <summary>A join row that turns up in the ledger later than this after it happened is old news: the ledger is written in bursts, but not that late.</summary>
     public static readonly TimeSpan JoinFreshness = TimeSpan.FromMinutes(30);
 
-    /// <param name="stateRoot">Where this app keeps its own files (sessions and their archives).</param>
+    /// <param name="stateRoot">Where this app keeps its own files (sessions, archives, and custom prices).</param>
     /// <param name="ledgerRoot">The game's per-character folder; the default under LocalLow when null.</param>
-    public LootStore(string stateRoot, string? ledgerRoot = null)
+    /// <param name="customPrices">Optional shared custom prices book (otherwise loaded from <paramref name="stateRoot"/>).</param>
+    public LootStore(string stateRoot, string? ledgerRoot = null, CustomPrices? customPrices = null)
     {
         _stateRoot = stateRoot;
         _ledgerRoot = ledgerRoot ?? LedgerLocator.DefaultRoot();
+        _custom = customPrices ?? new CustomPrices(stateRoot);
+        _customVersion = _custom.Version;
+        if (_custom.Count > 0) _snap = new Snapshot(0, [], Nothing.ByDay, ItemValues.Empty.WithCustom(_custom));
         _sessions = new LootSessions(Path.Combine(stateRoot, "none"));
         Sources = LedgerLocator.Find(_ledgerRoot);
     }
@@ -90,6 +96,38 @@ public sealed class LootStore
     /// <summary>The public price list in use (empty until one is downloaded).</summary>
     public PublicPrices PublicPrices => _public;
 
+    /// <summary>Custom prices set by hand for individual items (shared cleanly across windows).</summary>
+    public CustomPrices CustomPrices => _custom;
+
+    /// <summary>Sets a custom price for <paramref name="item"/> in copper (0cp allowed) and updates <see cref="Values"/> at once.</summary>
+    public bool SetCustomPrice(string item, long copper)
+    {
+        if (!_custom.Set(item, copper)) return false;
+        SyncCustom();
+        return true;
+    }
+
+    /// <summary>Clears any custom price for <paramref name="item"/> and restores its vendor/estimated value at once.</summary>
+    public bool ClearCustomPrice(string item)
+    {
+        if (!_custom.Remove(item)) return false;
+        SyncCustom();
+        return true;
+    }
+
+    /// <summary>Applies any updates to <see cref="CustomPrices"/> (including external edits on disk) to <see cref="Values"/>. True when values changed.</summary>
+    public bool SyncCustom()
+    {
+        lock (_gate)
+        {
+            bool reloaded = _custom.Reload();
+            if (!reloaded && _custom.Version == _customVersion) return false;
+            _customVersion = _custom.Version;
+            _snap = _snap with { Version = ++_version, Values = _snap.Values.WithCustom(_custom) };
+            return true;
+        }
+    }
+
     /// <summary>
     /// Takes in a downloaded public price list: items this PC has never seen sold get a value from it. Values are worked out again
     /// by the next <see cref="Refresh"/>, which then reports a change.
@@ -131,7 +169,8 @@ public sealed class LootStore
             Selected = null;
             Selection = [];
             _pricesChanged = true;
-            _snap = new Snapshot(++_version, [], Nothing.ByDay, ItemValues.Empty);
+            _customVersion = _custom.Version;
+            _snap = new Snapshot(++_version, [], Nothing.ByDay, ItemValues.Empty.WithCustom(_custom));
             Error = null;
             Sources = LedgerLocator.Find(root);
             _watch = new ActiveCharacterWatch();
@@ -168,7 +207,16 @@ public sealed class LootStore
     {
         lock (_gate)
         {
-            if (_folders.Count == 0) return false;
+            bool customChanged = _custom.Reload() || _custom.Version != _customVersion;
+            if (_folders.Count == 0)
+            {
+                if (customChanged)
+                {
+                    _customVersion = _custom.Version;
+                    _snap = _snap with { Version = ++_version, Values = _snap.Values.WithCustom(_custom) };
+                }
+                return false;
+            }
             bool changed = _dirty;
             foreach (var f in _folders) changed |= f.Refresh();
             changed |= _sessions.Reload();
@@ -181,11 +229,13 @@ public sealed class LootStore
             CurrentZone = ZoneOf(_folders.Count == 1 ? _folders[0].Rows : []);
             Error = _folders.Select(f => f.Error).FirstOrDefault(e => e is not null);
             FileCount = _folders.Sum(f => f.FileCount);
-            if (!changed && !_pricesChanged) return false;
+            if (!changed && !_pricesChanged && !customChanged) return false;
 
-            // New values only when a sale changed, so anything caching on the instance can tell
-            var values = _pricesChanged ? ItemValues.FromLedger(_prices.SelectMany(p => p.Rows), _public) : _snap.Values;
+            // New values only when a sale or custom price changed, so anything caching on the instance can tell
+            var values = _pricesChanged ? ItemValues.FromLedger(_prices.SelectMany(p => p.Rows), _public, _custom)
+                : customChanged ? _snap.Values.WithCustom(_custom) : _snap.Values;
             _pricesChanged = false;
+            _customVersion = _custom.Version;
             _dirty = false;
             // Characters on one server share a world, so what two of them logged is merged; two servers are two worlds, so nothing is
             var perCharacter = _folders.Select((f, i) => (Server: Selection[i].Server.ToLowerInvariant(), Events: (IReadOnlyList<LootEvent>)LootExtractor.Extract(f.Rows))).ToList();

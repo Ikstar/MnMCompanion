@@ -49,6 +49,8 @@ public partial class HistoryWindow : Window
     private HistoryCounts? _counts;
     private int _trades;   // trades, not rows: the ledger writes two rows for one
     private string _rail = "";
+    private bool _closing;
+    private long _customShown;
 
     internal HistoryWindow(LootStore store, Settings settings, HistoryData history)
     {
@@ -57,7 +59,7 @@ public partial class HistoryWindow : Window
         Ui.ApplyWindowIcon(this);
         _smallWindow = store;
         _settings = settings;
-        _focus = new HistoryFocus(new LootStore(store.StateRoot, store.LedgerRoot), StartScope(store, settings));
+        _focus = new HistoryFocus(new LootStore(store.StateRoot, store.LedgerRoot, store.CustomPrices), StartScope(store, settings));
         _history = history;
         // The saved place was kept at the size the window was drawn at then, so it is compared with the smallest size at that size
         var factor = Display.UiScale.Factor(settings.ScaleOf("History"));
@@ -85,7 +87,26 @@ public partial class HistoryWindow : Window
             _ = history.RefreshAsync();
             _timer.Start();
         };
-        Closed += (_, _) => _timer.Stop();
+        _customShown = store.CustomPrices.Version;
+        void OnCustomPricesChanged() => Dispatcher.BeginInvoke(() =>
+        {
+            if (_closing) return;
+            _focus.Loot.SyncCustom();
+            if (_customShown == store.CustomPrices.Version) return;
+            _customShown = store.CustomPrices.Version;
+            if (_pages.TryGetValue(_key, out var current))
+            {
+                if (current is LootHistoryPage loot) loot.Tick();
+                else if (current is IHistoryPage page) page.Tick();
+            }
+        });
+        store.CustomPrices.Changed += OnCustomPricesChanged;
+        Closed += (_, _) =>
+        {
+            _closing = true;
+            _timer.Stop();
+            store.CustomPrices.Changed -= OnCustomPricesChanged;
+        };
     }
 
     private void OnLook(object sender, RoutedEventArgs e) => LookWindow.Open(this, _settings);
@@ -308,6 +329,7 @@ public partial class HistoryWindow : Window
         if (_smallWindow.LedgerRoot != _focus.Loot.LedgerRoot) _focus.Loot.ChangeRoot(_smallWindow.LedgerRoot);
         _focus.Sync();
         await Task.Run(_focus.Loot.Refresh);
+        _customShown = _focus.Loot.CustomPrices.Version;
         await _history.RefreshAsync();
         if (Page(_key) is IHistoryPage page) page.Tick();
         if (_history.Store is { } store)

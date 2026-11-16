@@ -18,15 +18,20 @@ public enum ValueSource
     Charged,
     /// <summary>Never sold: the median of its family (same first two or three words) that were.</summary>
     Estimated,
+    /// <summary>A price the player set by hand for this item.</summary>
+    Custom,
 }
 
-/// <summary>What one of an item is worth to a vendor, in copper, and how that is known.</summary>
+/// <summary>What one of an item is worth to a vendor (or by custom price), in copper, and how that is known.</summary>
 public readonly record struct ItemValue(long Each, ValueSource Source)
 {
     public bool Known => Source != ValueSource.None;
 
     /// <summary>Worked out, not seen (from a vendor's stock price or the item's family): shown with "~".</summary>
     public bool Estimated => Source is ValueSource.Estimated or ValueSource.Charged;
+
+    /// <summary>Set by hand by the player via <see cref="CustomPrices"/>.</summary>
+    public bool Custom => Source == ValueSource.Custom;
 }
 
 /// <summary>
@@ -55,11 +60,13 @@ public sealed class ItemValues
     private readonly Dictionary<string, ItemValue> _known = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _charged = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<long>> _family = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _custom = new(StringComparer.OrdinalIgnoreCase);
+    private readonly int _ownCount;
 
-    /// <summary>Items with a price of their own.</summary>
-    public int Count => _known.Count;
+    /// <summary>Items with a price of their own (vendor sales, public price list, or custom prices).</summary>
+    public int Count => _ownCount;
 
-    public ItemValues(IEnumerable<(string Name, long Each)> sold, PublicPrices? list = null)
+    public ItemValues(IEnumerable<(string Name, long Each)> sold, PublicPrices? list = null, CustomPrices? custom = null)
     {
         var perItem = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, each) in sold)
@@ -71,19 +78,38 @@ public sealed class ItemValues
             foreach (var f in Families(name))
                 (_family.TryGetValue(f, out var fl) ? fl : _family[f] = []).Add(median);
         }
-        if (list is null) return;
-        foreach (var (name, price) in list.Items)
+        if (list is not null)
         {
-            if (_known.ContainsKey(name)) continue;            // a sale on this PC beats the list
-            if (price.Pays > 0)
+            foreach (var (name, price) in list.Items)
             {
-                _known[name] = new ItemValue(price.Pays, ValueSource.Public);
-                foreach (var f in Families(name))
-                    (_family.TryGetValue(f, out var fl) ? fl : _family[f] = []).Add(price.Pays);
+                if (_known.ContainsKey(name)) continue;            // a sale on this PC beats the list
+                if (price.Pays > 0)
+                {
+                    _known[name] = new ItemValue(price.Pays, ValueSource.Public);
+                    foreach (var f in Families(name))
+                        (_family.TryGetValue(f, out var fl) ? fl : _family[f] = []).Add(price.Pays);
+                }
+                else if (price.ChargeLow > 0) _charged[name] = Math.Max(1, (long)Math.Round(price.ChargeLow / ChargePerPay));
             }
-            else if (price.ChargeLow > 0) _charged[name] = Math.Max(1, (long)Math.Round(price.ChargeLow / ChargePerPay));
         }
+        if (custom is not null)
+            foreach (var p in custom.All)
+                _custom[p.Item] = p.Copper;
+        _ownCount = CountOwn();
     }
+
+    private ItemValues(Dictionary<string, ItemValue> known, Dictionary<string, long> charged, Dictionary<string, List<long>> family, CustomPrices? custom)
+    {
+        _known = known;
+        _charged = charged;
+        _family = family;
+        if (custom is not null)
+            foreach (var p in custom.All)
+                _custom[p.Item] = p.Copper;
+        _ownCount = CountOwn();
+    }
+
+    private int CountOwn() => _custom.Count == 0 ? _known.Count : _known.Count + _custom.Keys.Count(k => !_known.ContainsKey(k));
 
     /// <summary>
     /// The families a name belongs to, closest first: its first three words when it has four or more, then its first two
@@ -98,8 +124,12 @@ public sealed class ItemValues
         return list;
     }
 
-    /// <summary>The item's value: its own price, else one worked out from a vendor's stock price, else its family's, else <see cref="ValueSource.None"/>.</summary>
-    public ItemValue Of(string name)
+    /// <summary>The item's value: its custom price if set, else its vendor/public price, else worked out from stock or family, else <see cref="ValueSource.None"/>.</summary>
+    public ItemValue Of(string name) =>
+        _custom.TryGetValue(name, out var custom) ? new ItemValue(custom, ValueSource.Custom) : NaturalOf(name);
+
+    /// <summary>The item's underlying vendor/public/estimated value ignoring any custom price override.</summary>
+    public ItemValue NaturalOf(string name)
     {
         if (_known.TryGetValue(name, out var own)) return own;
         if (_charged.TryGetValue(name, out var charged)) return new ItemValue(charged, ValueSource.Charged);
@@ -110,6 +140,13 @@ public sealed class ItemValues
                 return new ItemValue(sorted[sorted.Count / 2], ValueSource.Estimated);
             }
         return default;
+    }
+
+    /// <summary>Returns an <see cref="ItemValues"/> sharing the same vendor/family data with <paramref name="custom"/> applied (or <c>this</c> when nothing changes).</summary>
+    public ItemValues WithCustom(CustomPrices? custom)
+    {
+        if (_custom.Count == 0 && (custom is null || custom.Count == 0)) return this;
+        return new ItemValues(_known, _charged, _family, custom);
     }
 
     /// <summary>The sales in some ledger rows: item and what one fetched (the stack's coin divided by its count).</summary>
@@ -125,5 +162,5 @@ public sealed class ItemValues
         }
     }
 
-    public static ItemValues FromLedger(IEnumerable<LedgerRow> rows, PublicPrices? list = null) => new(Sales(rows), list);
+    public static ItemValues FromLedger(IEnumerable<LedgerRow> rows, PublicPrices? list = null, CustomPrices? custom = null) => new(Sales(rows), list, custom);
 }
