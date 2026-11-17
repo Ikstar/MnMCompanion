@@ -38,6 +38,15 @@ public sealed record ItemWorth(string Item, int Count, ItemValue Value, IReadOnl
     public long Total => Value.Each * Count;
 }
 
+/// <summary>One looted item that contributes to a scrapped material yield.</summary>
+public sealed record ScrapFromItem(string Item, int ItemCount, int MaterialCount);
+
+/// <summary>One crafting material expected from scrapping looted items, with how many units and what they are worth.</summary>
+public sealed record ScrapMaterialWorth(string Material, int Count, ItemValue Value, IReadOnlyList<ScrapFromItem> From)
+{
+    public long Total => Value.Each * Count;
+}
+
 /// <summary>
 /// One person on a day: <see cref="Mobs"/> corpses, <see cref="Items"/> taken, and the coin counted for them, <see cref="Copper"/>: the purses they
 /// looted that were not divided, whole, plus (for a ledger's owner) the shares that reached them (<see cref="Received"/>). A divided purse is
@@ -47,10 +56,20 @@ public sealed record ItemWorth(string Item, int Count, ItemValue Value, IReadOnl
 /// </summary>
 public sealed record LootMember(string Name, bool You, string Class, int Level, int Mobs, int Items, long Copper, long Split,
     IReadOnlyList<MemberItem> Taken, IReadOnlyList<MemberMob> MobList, DateTime First, DateTime Last,
-    long ItemValue = 0, int Priced = 0, int Estimated = 0, int Unpriced = 0, long Purses = 0, long Received = 0, int SplitPurses = 0, int EstimatedShares = 0, int Unrecorded = 0, int Custom = 0)
+    long ItemValue = 0, int Priced = 0, int Estimated = 0, int Unpriced = 0, long Purses = 0, long Received = 0, int SplitPurses = 0, int EstimatedShares = 0, int Unrecorded = 0, int Custom = 0,
+    int Scrapped = 0, int VendorPriced = 0, IReadOnlyList<ScrapMaterialWorth>? ScrapYield = null)
 {
     /// <summary>The coin counted for them plus what a vendor would pay for the items (the priced and the estimated ones; <see cref="Unpriced"/> add nothing).</summary>
     public long Total => Copper + ItemValue;
+
+    /// <summary>Materials expected from scrapping items this player looted.</summary>
+    public IReadOnlyList<ScrapMaterialWorth> ScrapMaterials => ScrapYield ?? [];
+
+    /// <summary>Items valued by family or vendor stock estimate (excluding scrapped items whose materials are estimated).</summary>
+    public int FamilyEstimated => Taken.Where(t => t.Value.Source is ValueSource.Estimated or ValueSource.Charged).Sum(t => t.Count);
+
+    /// <summary>Items with no known price at all (excluding scrapped items with unpriced materials).</summary>
+    public int PlainUnpriced => Taken.Where(t => t.Value.Source == ValueSource.None).Sum(t => t.Count);
 
     /// <summary>What the purses they looted held, a mob's worth on average (the whole purse, whoever kept it).</summary>
     public double CopperPerMob => Mobs > 0 ? (double)Purses / Mobs : 0;
@@ -66,7 +85,7 @@ public sealed record LootMember(string Name, bool You, string Class, int Level, 
 /// else the ledger shows only the purses they looted, never what an autosplit gave them, so the group is compared by items alone.
 /// <see cref="EstimatedShares"/> of the shares in the coin were not in the ledger and are estimated (the owner's own purses in a group).
 /// </summary>
-public sealed record LootOurs(long Copper, long ItemValue, int Items, int Estimated, int Unpriced, int EstimatedShares = 0, int Unrecorded = 0, int Custom = 0)
+public sealed record LootOurs(long Copper, long ItemValue, int Items, int Estimated, int Unpriced, int EstimatedShares = 0, int Unrecorded = 0, int Custom = 0, int Scrapped = 0)
 {
     public long Total => Copper + ItemValue;
 
@@ -89,16 +108,23 @@ public sealed record MobLoot(string Mob, int Looted, long Copper, int Items, str
 /// <see cref="LootEvent"/>s with <see cref="Of"/>.
 /// </summary>
 public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<LootMember> Members, IReadOnlyList<ItemTakers> Items,
-    IReadOnlyList<MobLoot> Mobs, IReadOnlyList<LootEvent> Events, IReadOnlyList<ItemWorth>? Worth = null)
+    IReadOnlyList<MobLoot> Mobs, IReadOnlyList<LootEvent> Events, IReadOnlyList<ItemWorth>? Worth = null, IReadOnlyList<ScrapMaterialWorth>? ScrapYield = null)
 {
     /// <summary>The items taken, most valuable first (those with no price after, most numerous first).</summary>
     public IReadOnlyList<ItemWorth> ItemsWorth => Worth ?? [];
 
+    /// <summary>Materials expected from scrapping items looted across this day/session.</summary>
+    public IReadOnlyList<ScrapMaterialWorth> ScrapMaterials => ScrapYield ?? [];
+
     public long ItemValue => Members.Sum(m => m.ItemValue);
     public int Priced => Members.Sum(m => m.Priced);
+    public int VendorPriced => Members.Sum(m => m.VendorPriced);
     public int Custom => Members.Sum(m => m.Custom);
+    public int Scrapped => Members.Sum(m => m.Scrapped);
     public int Estimated => Members.Sum(m => m.Estimated);
+    public int FamilyEstimated => Members.Sum(m => m.FamilyEstimated);
     public int Unpriced => Members.Sum(m => m.Unpriced);
+    public int PlainUnpriced => Members.Sum(m => m.PlainUnpriced);
 
     /// <summary>Purses plus what a vendor would pay for the items.</summary>
     public long Total => Totals.Copper + ItemValue;
@@ -120,7 +146,7 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
             var mine = Members.Where(m => m.You).ToList();
             return mine.Count == 0 ? LootOurs.None
                 : new LootOurs(mine.Sum(m => m.Copper), mine.Sum(m => m.ItemValue), mine.Sum(m => m.Items), mine.Sum(m => m.Estimated), mine.Sum(m => m.Unpriced),
-                    mine.Sum(m => m.EstimatedShares), mine.Sum(m => m.Unrecorded), mine.Sum(m => m.Custom));
+                    mine.Sum(m => m.EstimatedShares), mine.Sum(m => m.Unrecorded), mine.Sum(m => m.Custom), mine.Sum(m => m.Scrapped));
         }
     }
 
@@ -135,6 +161,51 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
 
     /// <summary>Everything the day's members, items and mobs are called, lower case, for a filter box to look through.</summary>
     public string SearchText => string.Join(' ', Members.Select(m => m.Name).Concat(Items.Select(i => i.Item)).Concat(Mobs.Select(m => m.Mob))).ToLowerInvariant();
+
+    /// <summary>Aggregates the expected scrap material yields across some looted items.</summary>
+    public static IReadOnlyList<ScrapMaterialWorth> ScrapYieldOf(IEnumerable<(string Item, int Count)> taken, ItemValues values)
+    {
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        var totals = new Dictionary<string, (string Name, int Count, Dictionary<string, (string Item, int ItemCount, int MaterialCount)> From)>(comparer);
+
+        foreach (var (item, itemCount) in taken)
+        {
+            if (itemCount <= 0) continue;
+            var yields = values.ExpandScrap(item);
+            if (yields.Count == 0) yields = values.ScrapOf(item) ?? [];
+            if (yields.Count == 0) continue;
+
+            foreach (var y in yields)
+            {
+                int matCount = (int)Math.Min((long)itemCount * y.Qty, int.MaxValue);
+                if (!totals.TryGetValue(y.Item, out var entry))
+                    entry = (y.Item, 0, new Dictionary<string, (string Item, int ItemCount, int MaterialCount)>(comparer));
+                entry.Count = (int)Math.Min((long)entry.Count + matCount, int.MaxValue);
+                if (entry.From.TryGetValue(item, out var src))
+                    entry.From[item] = (src.Item, src.ItemCount + itemCount, (int)Math.Min((long)src.MaterialCount + matCount, int.MaxValue));
+                else
+                    entry.From[item] = (item, itemCount, matCount);
+                totals[y.Item] = entry;
+            }
+        }
+
+        if (totals.Count == 0) return [];
+        return totals.Values.Select(e =>
+            {
+                var val = values.Of(e.Name);
+                var from = e.From.Values
+                    .OrderByDescending(f => f.MaterialCount)
+                    .ThenBy(f => f.Item, comparer)
+                    .Select(f => new ScrapFromItem(f.Item, f.ItemCount, f.MaterialCount))
+                    .ToList();
+                return new ScrapMaterialWorth(e.Name, e.Count, val, from);
+            })
+            .OrderByDescending(m => m.Total)
+            .ThenByDescending(m => m.Value.Known)
+            .ThenByDescending(m => m.Count)
+            .ThenBy(m => m.Material, comparer)
+            .ToList();
+    }
 
     public static LootDay Of(DateOnly day, IReadOnlyList<LootEvent> events, ItemValues? values = null)
     {
@@ -160,14 +231,17 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
                 .ToList();
             long itemValue = taken.Sum(t => t.Total);
             int priced = taken.Where(t => t.Value.Known && !t.Value.Estimated).Sum(t => t.Count);
+            int vendorPriced = taken.Where(t => t.Value.Source is ValueSource.Sold or ValueSource.Public).Sum(t => t.Count);
             int custom = taken.Where(t => t.Value.Custom).Sum(t => t.Count);
+            int scrapped = taken.Where(t => t.Value.Scrap).Sum(t => t.Count);
             int estimated = taken.Where(t => t.Value.Estimated).Sum(t => t.Count);
             int unpriced = taken.Where(t => !t.Value.Known).Sum(t => t.Count);
+            var memberScrap = ScrapYieldOf(taken.Select(t => (t.Item, t.Count)), values);
             members.Add(new LootMember(p.Who, p.You, named is null || named.Class.Length == 0 ? "" : GameClasses.NameOf(named.Class), named?.Level ?? 0,
                 p.Mobs, p.Items, p.Copper, mine.Where(e => e.Kind == LootKind.Coin).Sum(e => e.Split), taken, mobList,
                 mine.Count == 0 ? default : mine.Min(e => e.Time), mine.Count == 0 ? default : mine.Max(e => e.Time), itemValue, priced, estimated, unpriced,
                 p.Purses, p.Received, p.SplitPurses, p.EstimatedShares,
-                mine.Count(e => e.Kind == LootKind.Coin && e.Source == LootExtractor.UnknownCreature), custom));
+                mine.Count(e => e.Kind == LootKind.Coin && e.Source == LootExtractor.UnknownCreature), custom, scrapped, vendorPriced, memberScrap));
         }
         // By what each took: coin is no basis for comparing people, since only the ledger owner's shares of divided purses are ever known
         members = members.OrderByDescending(m => m.ItemValue).ThenByDescending(m => m.Items).ThenByDescending(m => m.Mobs).ThenBy(m => m.Name, comparer).ToList();
@@ -179,6 +253,7 @@ public sealed record LootDay(DateOnly Day, LootTotals Totals, IReadOnlyList<Loot
 
         var worth = itemTakers.Select(i => new ItemWorth(i.Item, i.Count, values.Of(i.Item), i.By))
             .OrderByDescending(i => i.Total).ThenByDescending(i => i.Value.Known).ThenByDescending(i => i.Count).ThenBy(i => i.Item, comparer).ToList();
-        return new LootDay(day, LootSummary.Totals(live), members, itemTakers, mobs, live, worth);
+        var dayScrap = ScrapYieldOf(itemTakers.Select(i => (i.Item, i.Count)), values);
+        return new LootDay(day, LootSummary.Totals(live), members, itemTakers, mobs, live, worth, dayScrap);
     }
 }

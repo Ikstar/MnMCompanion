@@ -120,6 +120,18 @@ public sealed record PriceDay(DateOnly Day, int Sellers, long? Low, long? Median
 /// <summary>A price someone set: when, what, what they asked before (if anything), and whether it still stands.</summary>
 public sealed record PriceChange(DateTime Time, DateTime Seen, string Who, MarketIntent Intent, long Copper, int? Stack, int? Quantity, long? Previous, bool Current);
 
+/// <summary>One material yielded when valuing a scrapped item on the auction market.</summary>
+public sealed record MarketScrapPart(string Material, int QtyPerOne, int TotalQty, MarketItem? Item, long? UnitCopper);
+
+/// <summary>One looted item (or scrapped item valued by its yielded materials) with a market price on <c>Market → Yours</c>.</summary>
+public sealed record MarketYoursItem(string Name, int Count, bool Scrapped, IReadOnlyList<Loot.ScrapYield> Yields, MarketItem Item, long Each, long Worth, bool PartialScrap, IReadOnlyList<MarketScrapPart> Parts);
+
+/// <summary>One looted item (or scrapped item) without a market price on <c>Market → Yours</c>.</summary>
+public sealed record MarketYoursUnpriced(string Name, int Count, bool Scrapped, IReadOnlyList<Loot.ScrapYield> Yields);
+
+/// <summary>All looted items priced (or left unpriced) on <c>Market → Yours</c>, taking scrap rules into account.</summary>
+public sealed record MarketYoursSummary(int DistinctCount, long Total, IReadOnlyList<MarketYoursItem> Priced, IReadOnlyList<MarketYoursUnpriced> Unpriced);
+
 /// <summary>The sums over an item's versions: by day, every change, the trend.</summary>
 public static class MarketMath
 {
@@ -216,4 +228,67 @@ public static class MarketMath
 
     /// <summary>The price as the list shows it: a stack's price for a bulk material ("5sp/stack"), else the price of one.</summary>
     public static string Shown(long perOne, int? stack) => stack is > 1 ? Coin(perOne * stack.Value) + "/stack" : Coin(perOne);
+
+    /// <summary>
+    /// Values <paramref name="looted"/> items against <paramref name="market"/>: plain items use their own <see cref="MarketItem.Headline"/>,
+    /// while items set in <paramref name="scrap"/> are valued by summing the <see cref="MarketItem.Headline"/> prices of their yielded materials.
+    /// </summary>
+    public static MarketYoursSummary Yours(IEnumerable<(string Name, int Count)> looted, MarketSnapshot market, Loot.ScrapItems? scrap = null)
+    {
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        var grouped = new Dictionary<string, (string Name, int Count)>(comparer);
+        foreach (var (name, count) in looted)
+        {
+            if (string.IsNullOrWhiteSpace(name) || count <= 0) continue;
+            var clean = name.Trim();
+            if (grouped.TryGetValue(clean, out var existing))
+                grouped[clean] = (existing.Name, (int)Math.Min((long)existing.Count + count, int.MaxValue));
+            else
+                grouped[clean] = (clean, count);
+        }
+
+        var scrapValues = scrap is { Count: > 0 } ? Loot.ItemValues.Empty.WithScrap(scrap) : null;
+        var priced = new List<MarketYoursItem>();
+        var unpriced = new List<MarketYoursUnpriced>();
+
+        foreach (var (name, count) in grouped.Values)
+        {
+            IReadOnlyList<Loot.ScrapYield> yields = scrapValues is not null ? scrapValues.ExpandScrap(name) : [];
+            if (yields.Count == 0 && scrap is { Count: > 0 }) yields = scrap.Of(name) ?? [];
+
+            if (yields.Count == 0)
+            {
+                if (market.Named(name) is { Headline: { } headline } mi)
+                    priced.Add(new MarketYoursItem(name, count, false, [], mi, headline, headline * count, false, []));
+                else
+                    unpriced.Add(new MarketYoursUnpriced(name, count, false, []));
+                continue;
+            }
+
+            var parts = new List<MarketScrapPart>(yields.Count);
+            foreach (var y in yields)
+            {
+                var mi = market.Named(y.Item);
+                var unit = mi?.Headline;
+                int totalQty = (int)Math.Min((long)y.Qty * count, int.MaxValue);
+                parts.Add(new MarketScrapPart(y.Item, y.Qty, totalQty, mi, unit));
+            }
+            var pricedParts = parts.Where(p => p.UnitCopper is not null && p.Item is not null).ToList();
+            if (pricedParts.Count > 0)
+            {
+                long each = pricedParts.Sum(p => p.UnitCopper!.Value * p.QtyPerOne);
+                long worth = each * count;
+                var primary = pricedParts.OrderByDescending(p => p.UnitCopper!.Value * p.TotalQty).First().Item!;
+                priced.Add(new MarketYoursItem(name, count, true, yields, primary, each, worth, pricedParts.Count < parts.Count, parts));
+            }
+            else
+            {
+                unpriced.Add(new MarketYoursUnpriced(name, count, true, yields));
+            }
+        }
+
+        var sortedPriced = priced.OrderByDescending(p => p.Worth).ThenBy(p => p.Name, comparer).ToList();
+        var sortedUnpriced = unpriced.OrderByDescending(u => u.Count).ThenBy(u => u.Name, comparer).ToList();
+        return new MarketYoursSummary(sortedPriced.Count + sortedUnpriced.Count, sortedPriced.Sum(p => p.Worth), sortedPriced, sortedUnpriced);
+    }
 }

@@ -25,7 +25,8 @@ public sealed class LootStore
     private bool _pricesChanged = true;
     private PublicPrices _public = PublicPrices.Empty;
     private readonly CustomPrices _custom;
-    private long _customVersion;
+    private readonly ScrapItems _scrap;
+    private long _customVersion, _scrapVersion;
     private bool _dirty;
     private long _version;
     private volatile Snapshot _snap = Nothing;
@@ -36,16 +37,19 @@ public sealed class LootStore
     /// <summary>A join row that turns up in the ledger later than this after it happened is old news: the ledger is written in bursts, but not that late.</summary>
     public static readonly TimeSpan JoinFreshness = TimeSpan.FromMinutes(30);
 
-    /// <param name="stateRoot">Where this app keeps its own files (sessions, archives, and custom prices).</param>
+    /// <param name="stateRoot">Where this app keeps its own files (sessions, archives, custom prices, and scrap rules).</param>
     /// <param name="ledgerRoot">The game's per-character folder; the default under LocalLow when null.</param>
     /// <param name="customPrices">Optional shared custom prices book (otherwise loaded from <paramref name="stateRoot"/>).</param>
-    public LootStore(string stateRoot, string? ledgerRoot = null, CustomPrices? customPrices = null)
+    /// <param name="scrapItems">Optional shared scrap rules book (otherwise loaded from <paramref name="stateRoot"/>).</param>
+    public LootStore(string stateRoot, string? ledgerRoot = null, CustomPrices? customPrices = null, ScrapItems? scrapItems = null)
     {
         _stateRoot = stateRoot;
         _ledgerRoot = ledgerRoot ?? LedgerLocator.DefaultRoot();
         _custom = customPrices ?? new CustomPrices(stateRoot);
+        _scrap = scrapItems ?? new ScrapItems(stateRoot);
         _customVersion = _custom.Version;
-        if (_custom.Count > 0) _snap = new Snapshot(0, [], Nothing.ByDay, ItemValues.Empty.WithCustom(_custom));
+        _scrapVersion = _scrap.Version;
+        if (_custom.Count > 0 || _scrap.Count > 0) _snap = new Snapshot(0, [], Nothing.ByDay, ItemValues.Empty.WithOverrides(_custom, _scrap));
         _sessions = new LootSessions(Path.Combine(stateRoot, "none"));
         Sources = LedgerLocator.Find(_ledgerRoot);
     }
@@ -99,11 +103,15 @@ public sealed class LootStore
     /// <summary>Custom prices set by hand for individual items (shared cleanly across windows).</summary>
     public CustomPrices CustomPrices => _custom;
 
-    /// <summary>Sets a custom price for <paramref name="item"/> in copper (0cp allowed) and updates <see cref="Values"/> at once.</summary>
+    /// <summary>Items marked to scrap instead of sell, with what each breaks down into (shared cleanly across windows).</summary>
+    public ScrapItems ScrapItems => _scrap;
+
+    /// <summary>Sets a custom price for <paramref name="item"/> in copper (0cp allowed), clears any scrap rule for it, and updates <see cref="Values"/> at once.</summary>
     public bool SetCustomPrice(string item, long copper)
     {
         if (!_custom.Set(item, copper)) return false;
-        SyncCustom();
+        _scrap.Remove(item);
+        SyncOverrides();
         return true;
     }
 
@@ -111,22 +119,44 @@ public sealed class LootStore
     public bool ClearCustomPrice(string item)
     {
         if (!_custom.Remove(item)) return false;
-        SyncCustom();
+        SyncOverrides();
         return true;
     }
 
-    /// <summary>Applies any updates to <see cref="CustomPrices"/> (including external edits on disk) to <see cref="Values"/>. True when values changed.</summary>
-    public bool SyncCustom()
+    /// <summary>Sets <paramref name="item"/> to scrap into <paramref name="yields"/> instead of selling, clears any direct custom price on it, and updates <see cref="Values"/> at once.</summary>
+    public bool SetScrapItem(string item, IReadOnlyList<ScrapYield> yields)
+    {
+        if (!_scrap.Set(item, yields)) return false;
+        _custom.Remove(item);
+        SyncOverrides();
+        return true;
+    }
+
+    /// <summary>Stops scrapping <paramref name="item"/> and restores its vendor/estimated value at once.</summary>
+    public bool ClearScrapItem(string item)
+    {
+        if (!_scrap.Remove(item)) return false;
+        SyncOverrides();
+        return true;
+    }
+
+    /// <summary>Applies any updates to <see cref="CustomPrices"/> or <see cref="ScrapItems"/> (including external edits on disk) to <see cref="Values"/>. True when values changed.</summary>
+    public bool SyncOverrides()
     {
         lock (_gate)
         {
-            bool reloaded = _custom.Reload();
-            if (!reloaded && _custom.Version == _customVersion) return false;
+            bool customReloaded = _custom.Reload();
+            bool scrapReloaded = _scrap.Reload();
+            if (!customReloaded && !scrapReloaded && _custom.Version == _customVersion && _scrap.Version == _scrapVersion) return false;
             _customVersion = _custom.Version;
-            _snap = _snap with { Version = ++_version, Values = _snap.Values.WithCustom(_custom) };
+            _scrapVersion = _scrap.Version;
+            _snap = _snap with { Version = ++_version, Values = _snap.Values.WithOverrides(_custom, _scrap) };
             return true;
         }
     }
+
+    /// <summary>Applies any updates to custom prices or scrap rules (including external edits on disk) to <see cref="Values"/>. True when values changed.</summary>
+    public bool SyncCustom() => SyncOverrides();
 
     /// <summary>
     /// Takes in a downloaded public price list: items this PC has never seen sold get a value from it. Values are worked out again
@@ -170,7 +200,8 @@ public sealed class LootStore
             Selection = [];
             _pricesChanged = true;
             _customVersion = _custom.Version;
-            _snap = new Snapshot(++_version, [], Nothing.ByDay, ItemValues.Empty.WithCustom(_custom));
+            _scrapVersion = _scrap.Version;
+            _snap = new Snapshot(++_version, [], Nothing.ByDay, ItemValues.Empty.WithOverrides(_custom, _scrap));
             Error = null;
             Sources = LedgerLocator.Find(root);
             _watch = new ActiveCharacterWatch();
@@ -208,12 +239,14 @@ public sealed class LootStore
         lock (_gate)
         {
             bool customChanged = _custom.Reload() || _custom.Version != _customVersion;
+            bool scrapChanged = _scrap.Reload() || _scrap.Version != _scrapVersion;
             if (_folders.Count == 0)
             {
-                if (customChanged)
+                if (customChanged || scrapChanged)
                 {
                     _customVersion = _custom.Version;
-                    _snap = _snap with { Version = ++_version, Values = _snap.Values.WithCustom(_custom) };
+                    _scrapVersion = _scrap.Version;
+                    _snap = _snap with { Version = ++_version, Values = _snap.Values.WithOverrides(_custom, _scrap) };
                 }
                 return false;
             }
@@ -229,13 +262,14 @@ public sealed class LootStore
             CurrentZone = ZoneOf(_folders.Count == 1 ? _folders[0].Rows : []);
             Error = _folders.Select(f => f.Error).FirstOrDefault(e => e is not null);
             FileCount = _folders.Sum(f => f.FileCount);
-            if (!changed && !_pricesChanged && !customChanged) return false;
+            if (!changed && !_pricesChanged && !customChanged && !scrapChanged) return false;
 
-            // New values only when a sale or custom price changed, so anything caching on the instance can tell
-            var values = _pricesChanged ? ItemValues.FromLedger(_prices.SelectMany(p => p.Rows), _public, _custom)
-                : customChanged ? _snap.Values.WithCustom(_custom) : _snap.Values;
+            // New values only when a sale, custom price, or scrap rule changed, so anything caching on the instance can tell
+            var values = _pricesChanged ? ItemValues.FromLedger(_prices.SelectMany(p => p.Rows), _public, _custom, _scrap)
+                : (customChanged || scrapChanged) ? _snap.Values.WithOverrides(_custom, _scrap) : _snap.Values;
             _pricesChanged = false;
             _customVersion = _custom.Version;
+            _scrapVersion = _scrap.Version;
             _dirty = false;
             // Characters on one server share a world, so what two of them logged is merged; two servers are two worlds, so nothing is
             var perCharacter = _folders.Select((f, i) => (Server: Selection[i].Server.ToLowerInvariant(), Events: (IReadOnlyList<LootEvent>)LootExtractor.Extract(f.Rows))).ToList();

@@ -50,7 +50,7 @@ public partial class HistoryWindow : Window
     private int _trades;   // trades, not rows: the ledger writes two rows for one
     private string _rail = "";
     private bool _closing;
-    private long _customShown;
+    private long _customShown, _scrapShown;
 
     internal HistoryWindow(LootStore store, Settings settings, HistoryData history)
     {
@@ -59,7 +59,7 @@ public partial class HistoryWindow : Window
         Ui.ApplyWindowIcon(this);
         _smallWindow = store;
         _settings = settings;
-        _focus = new HistoryFocus(new LootStore(store.StateRoot, store.LedgerRoot, store.CustomPrices), StartScope(store, settings));
+        _focus = new HistoryFocus(new LootStore(store.StateRoot, store.LedgerRoot, store.CustomPrices, store.ScrapItems), StartScope(store, settings));
         _history = history;
         // The saved place was kept at the size the window was drawn at then, so it is compared with the smallest size at that size
         var factor = Display.UiScale.Factor(settings.ScaleOf("History"));
@@ -88,24 +88,28 @@ public partial class HistoryWindow : Window
             _timer.Start();
         };
         _customShown = store.CustomPrices.Version;
-        void OnCustomPricesChanged() => Dispatcher.BeginInvoke(() =>
+        _scrapShown = store.ScrapItems.Version;
+        void OnOverridesChanged() => Dispatcher.BeginInvoke(() =>
         {
             if (_closing) return;
-            _focus.Loot.SyncCustom();
-            if (_customShown == store.CustomPrices.Version) return;
+            _focus.Loot.SyncOverrides();
+            if (_customShown == store.CustomPrices.Version && _scrapShown == store.ScrapItems.Version) return;
             _customShown = store.CustomPrices.Version;
+            _scrapShown = store.ScrapItems.Version;
             if (_pages.TryGetValue(_key, out var current))
             {
                 if (current is LootHistoryPage loot) loot.Tick();
                 else if (current is IHistoryPage page) page.Tick();
             }
         });
-        store.CustomPrices.Changed += OnCustomPricesChanged;
+        store.CustomPrices.Changed += OnOverridesChanged;
+        store.ScrapItems.Changed += OnOverridesChanged;
         Closed += (_, _) =>
         {
             _closing = true;
             _timer.Stop();
-            store.CustomPrices.Changed -= OnCustomPricesChanged;
+            store.CustomPrices.Changed -= OnOverridesChanged;
+            store.ScrapItems.Changed -= OnOverridesChanged;
         };
     }
 
@@ -330,6 +334,7 @@ public partial class HistoryWindow : Window
         _focus.Sync();
         await Task.Run(_focus.Loot.Refresh);
         _customShown = _focus.Loot.CustomPrices.Version;
+        _scrapShown = _focus.Loot.ScrapItems.Version;
         await _history.RefreshAsync();
         if (Page(_key) is IHistoryPage page) page.Tick();
         if (_history.Store is { } store)

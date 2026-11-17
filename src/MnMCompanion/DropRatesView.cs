@@ -69,6 +69,7 @@ internal sealed class DropRatesView : UserControl
             if (_item is { } opened && _store is not null)
             {
                 bool hasCustom = _store.CustomPrices.TryGet(opened.Item, out var c);
+                bool hasScrap = _store.ScrapItems.TryGet(opened.Item, out var sr);
                 var priceBtn = new Button
                 {
                     Content = hasCustom ? $"Custom price: {LootSummary.Coin(c)}…" : "Set custom price…",
@@ -79,6 +80,18 @@ internal sealed class DropRatesView : UserControl
                 priceBtn.Click += (_, _) => CustomPriceDialog.Open(Window.GetWindow(this), _store, opened.Item);
                 DockPanel.SetDock(priceBtn, Dock.Right);
                 top.Children.Add(priceBtn);
+
+                var scrapBtn = new Button
+                {
+                    Content = hasScrap ? $"Scraps into {ScrapItems.DescribeYields(sr.Yields)}…" : "Scrap instead…",
+                    Style = (Style)Ui.Theme["TextButton"],
+                    Padding = new Thickness(10, 4, 10, 4),
+                    Margin = new Thickness(0, 0, 6, 0),
+                    ToolTip = "Set, change or stop scrapping this item instead of selling",
+                };
+                scrapBtn.Click += (_, _) => ScrapItemDialog.Open(Window.GetWindow(this), _store, opened.Item);
+                DockPanel.SetDock(scrapBtn, Dock.Right);
+                top.Children.Add(scrapBtn);
             }
         }
         else
@@ -114,7 +127,7 @@ internal sealed class DropRatesView : UserControl
     private static string Range(double low, double high) => $"{low * 100:0}–{high * 100:0}%";
 
     private string Each(string item) =>
-        _values.Of(item) is { Known: true } v ? (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each) : "—";
+        _values.Of(item) is var v && v.Known ? (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each) : v.Scrap ? "scrap" : "—";
 
     private FrameworkElement MobList()
     {
@@ -142,12 +155,12 @@ internal sealed class DropRatesView : UserControl
             panel.Children.Add(Line($"Community: {community.Contributors:N0} players looted this monster ({community.Corpses:N0} corpses between them). The Community column is the middle of their shares, so one player can't swing it."));
         var columns = new List<Col<DropItem>>
         {
-            new("Item", 0, d => d.Item, d => d.Item, Right: false),
+            new("Item", 0, d => _values.Of(d.Item).Scrap ? $"{d.Item}  (scrap)" : d.Item, d => d.Item, Right: false),
             new("Share", 80, d => Fmt.Pct(d.Share), d => d.Share, Tip: "Of this monster's looted corpses, how many gave the item"),
             new("Range", 90, d => Range(d.Low, d.High), d => d.Low, Tip: "The 95% range the true share lies in: wide when there are few corpses"),
             new("Corpses", 110, d => $"{d.Corpses:N0} of {m.Corpses:N0}", d => d.Corpses),
             new("Units", 70, d => $"{d.Units:N0}", d => d.Units),
-            new("Each", 90, d => Each(d.Item), d => _values.Of(d.Item).Each, Tip: "What a vendor pays for one"),
+            new("Each", 90, d => Each(d.Item), d => _values.Of(d.Item).Each, Tip: "What one is worth (vendor price, custom price, or scrap yield)"),
         };
         if (theirs is not null)
             columns.Insert(2, new Col<DropItem>("Community", 96, d => theirs.TryGetValue(d.Item, out var c) ? Fmt.Pct(c.Share) : "—", d => theirs.TryGetValue(d.Item, out var c) ? c.Share : -1.0,
@@ -162,11 +175,11 @@ internal sealed class DropRatesView : UserControl
         if (_items.Count == 0) return Nothing();
         return Table.Searchable(_items, i => i.Item, "Search items by name", () => _search, s => _search = s, rows => Table.Build("drop-items", rows, new Col<DroppedItem>[]
         {
-            new("Item", 0, i => i.Item, i => i.Item, Right: false),
+            new("Item", 0, i => _values.Of(i.Item).Scrap ? $"{i.Item}  (scrap)" : i.Item, i => i.Item, Right: false),
             new("Corpses", 78, i => $"{i.Corpses:N0}", i => i.Corpses, Tip: "Looted corpses it came off, in all"),
             new("Monsters", 80, i => $"{i.Sources.Count:N0}", i => i.Sources.Count, Tip: "Kinds of monster it has come off"),
             new("Likeliest source", 300, i => $"{i.Sources[0].Mob}  {Fmt.Pct(i.Sources[0].Share)}{(i.Sources[0].Few ? " *" : "")}", i => i.Sources[0].Share, Right: false),
-            new("Each", 90, i => Each(i.Item), i => _values.Of(i.Item).Each, Tip: "What a vendor pays for one"),
+            new("Each", 90, i => Each(i.Item), i => _values.Of(i.Item).Each, Tip: "What one is worth (vendor price, custom price, or scrap yield)"),
         }, Build, defaultSort: 1, bar: i => i.Corpses, color: _ => Palette.You, click: i => { _item = i; Build(); },
         menu: _store is null ? null : i => PriceMenu.For(this, _store, i.Item)));
     }
@@ -176,7 +189,23 @@ internal sealed class DropRatesView : UserControl
         var panel = new StackPanel();
         panel.Children.Add(Title(item.Item, "comes off"));
         var val = _values.Of(item.Item);
-        var priceText = val.Custom ? $"your custom price is {LootSummary.Coin(val.Each)}" : $"a vendor pays {Each(item.Item)}";
+        string priceText;
+        if (val.Scrap)
+        {
+            var yields = _values.ScrapOf(item.Item);
+            var yieldText = yields is { Count: > 0 } ? ScrapItems.DescribeYields(yields) : "materials";
+            priceText = val.Known
+                ? $"scraps into {yieldText} ({(val.Estimated ? "~" : "")}{LootSummary.Coin(val.Each)})"
+                : $"scraps into {yieldText} (material unpriced)";
+        }
+        else if (val.Custom)
+        {
+            priceText = $"your custom price is {LootSummary.Coin(val.Each)}";
+        }
+        else
+        {
+            priceText = $"a vendor pays {Each(item.Item)}";
+        }
         panel.Children.Add(Line($"{item.Corpses:N0} looted corpses in all · {item.Sources.Count:N0} kinds of monster · {priceText}"));
         if (CommunityPrice(item.Item) is { } sold)
             panel.Children.Add(Line($"Community: vendors pay a middle price of {LootSummary.Coin(sold.Median)} for one ({LootSummary.Coin(sold.Low)} to {LootSummary.Coin(sold.High)} between players), from {sold.Contributors:N0} players."));

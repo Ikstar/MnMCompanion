@@ -518,15 +518,16 @@ ledger says which: a purse the looter kept has no split, and one that was divide
 
 ### What an item is worth
 
-There's no price list inside the game, so Companion works it out from any custom price you set or from what vendors actually paid you:
+There's no price list inside the game, so Companion works it out from any scrap rule or custom price you set, or from what vendors actually paid you:
 
-1. **Your own custom price:** right-click any item (or click it in History) to set what one is worth, or `0cp` for an item worth nothing so it stops marking totals with `+`.
-2. **Seen it sold:** the middle value of what vendors paid for that item (across all your characters on this PC). No mark.
-3. **Never sold, but a similar item was:** items whose names start the same way (for example "Rusty Iron ...") sell for about the same, so it
+1. **Scrap instead of sell:** right-click any item (or choose **Scrap instead…** from its price prompt) to enter what crafting materials it breaks down into (pre-filled from your cached wiki recipe list when available). Companion values the item from those materials' prices, tallies the expected scrap materials under **Scrap yield**, and values scrapped loot on **Market → Yours** by what those materials fetch on the market.
+2. **Your own custom price:** right-click any item (or click it in History) to set what one is worth, or `0cp` for an item worth nothing so it stops marking totals with `+`.
+3. **Seen it sold:** the middle value of what vendors paid for that item (across all your characters on this PC). No mark.
+4. **Never sold, but a similar item was:** items whose names start the same way (for example "Rusty Iron ...") sell for about the same, so it
    borrows the family's price. Shown with **`~`**.
-4. **Nothing to go on:** left out of the total and marked with **`+`**.
+5. **Nothing to go on:** left out of the total and marked with **`+`**.
 
-Sell one of an unpriced item to any vendor and from then on it's priced, for every character — or right-click it to set a custom price. You don't have to do anything else.
+Sell one of an unpriced item to any vendor and from then on it's priced, for every character — or right-click it to set a custom price or scrap yield. You don't have to do anything else.
 
 The price is *what a vendor pays*, not what another player might pay. It's a floor, not a market value.
 
@@ -573,6 +574,7 @@ The other players' names you see in the group come from your own ledger files; t
 | `market.json` | The price book the Market page keeps: every seller's current price from mnm-db.com's feed and the prices they replaced, with the site's item cards. Public data from the site, nothing from your game. |
 | `market.meta.json` | When mnm-db.com was last asked and what its feed's version tag was, so Companion keeps to once per publish (and to the site's own "wait") even after a restart. |
 | `custom-prices.json` | Any custom item prices you set by hand. Stored only on this PC; never shared. |
+| `scrap-items.json` | Items you marked to scrap instead of sell, and what crafting materials each yields. Stored only on this PC; never shared. |
 | `<server>-<character>\` | Your session markers and the text files for archived sessions. |
 | `ledger.db` | A private copy of **every ledger row** the app has read (see below). |
 

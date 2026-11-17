@@ -517,8 +517,8 @@ public partial class LootHistoryPage : UserControl
         AddTile("Days", $"{days:N0}", $"{d.First:MMM d} to {d.Last:MMM d}");
         AddTile("Looters", $"{d.Members.Count:N0}", d.Members.MaxBy(m => m.Items) is { } most ? $"most: {most.Name}" : "");
         AddTile("From", $"{d.Mobs.Count:N0}", d.Mobs.Count == 1 ? "kind of monster" : "kinds of monster");
-        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.Priced, d.Custom, d.Estimated, d.Unpriced));
-        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
+        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.VendorPriced, d.Custom, d.Scrapped, d.FamilyEstimated, d.PlainUnpriced));
+        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Item, best.Value, best.Count));
 
         var query = _found?.Query ?? Query;
         Tabs(["Items", "Looters", "Monsters", "Days", "Loot log"], tab => tab switch
@@ -528,7 +528,7 @@ public partial class LootHistoryPage : UserControl
             "Monsters" => AnswerMobsTable(d),
             "Days" => AnswerDaysTable(d),
             _ => Log(d.Events, withDate: true),
-        }, _ => [("Copy items", () => LootSearch.Text(query, d))], tab => tab == "Items" ? [CustomPricesAction()] : []);
+        }, _ => [("Copy items", () => LootSearch.Text(query, d))], tab => tab == "Items" ? [CustomPricesAction(), ScrappedItemsAction()] : []);
     }
 
     private void RenderAnswerMember(LootDay day, LootMember m)
@@ -546,15 +546,15 @@ public partial class LootHistoryPage : UserControl
         AddTile("Kinds", $"{m.Taken.Count:N0}", $"of {Plural(day.Items.Count, "kind")} found");
         AddTile("Days", $"{DaysOf(day, m.Name):N0}", $"{m.First:MMM d} to {m.Last:MMM d}");
         AddTile("Corpses", $"{m.Mobs:N0}", "looted that gave one");
-        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.Priced, m.Custom, m.Estimated, m.Unpriced));
-        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
+        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.VendorPriced, m.Custom, m.Scrapped, m.FamilyEstimated, m.PlainUnpriced));
+        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Item, best.Value, best.Count));
 
         Tabs(["Items", "Monsters", "Loot log"], tab => tab switch
         {
             "Items" => MemberItemsTable(m, search: false),
             "Monsters" => MemberMobsTable(m, coin: false),
             _ => Log(day.Events.Where(e => e.Who.Equals(m.Name, StringComparison.OrdinalIgnoreCase)), withDate: true),
-        }, _ => [("Copy summary", () => LootSummary.MemberText(m))], tab => tab == "Items" ? [CustomPricesAction()] : []);
+        }, _ => [("Copy summary", () => LootSummary.MemberText(m))], tab => tab == "Items" ? [CustomPricesAction(), ScrappedItemsAction()] : []);
     }
 
     private FrameworkElement AnswerLootersTable(LootDay d)
@@ -608,12 +608,12 @@ public partial class LootHistoryPage : UserControl
         Tiles.Children.Clear();
         AddTile("Mobs looted", $"{t.Mobs:N0}", $"{d.Mobs.Count:N0} kinds");
         AddTile("Coin", LootSummary.Coin(t.Copper), t.Mobs > 0 ? $"{LootSummary.Coin(t.Copper / t.Mobs)} a mob" : "in purses");
-        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.Priced, d.Custom, d.Estimated, d.Unpriced));
+        AddTile("Items worth", LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0), ItemsNote(d.VendorPriced, d.Custom, d.Scrapped, d.FamilyEstimated, d.PlainUnpriced));
         AddTile("Items", $"{t.Items:N0}", $"{d.Items.Count:N0} kinds");
         if (d.Unrecorded > 0) AddTile("Items not recorded", $"{d.Unrecorded:N0} corpses", "the game's ledger leaves out the items of monsters with an apostrophe in their name (Skri'Var…)", Palette.Muted);
         AddTile("Looters", $"{d.Members.Count:N0}", d.Members.Count > 0 ? $"most: {d.Members[0].Name}" : "");
         if (d.Members.MaxBy(m => m.Mobs) is { Mobs: > 0 } busiest) AddTile("Most mobs", $"{busiest.Mobs:N0}", busiest.Name);
-        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
+        if (d.ItemsWorth.FirstOrDefault(i => i.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Item, best.Value, best.Count));
         if (t.Share > 0) AddTile("Your splits", LootSummary.Coin(t.Share), "your share of the purses", Palette.Heal);
 
         Tabs(["Looters", "Items", "Mobs", "Drop rates", "Loot log"], tab => tab switch
@@ -624,9 +624,9 @@ public partial class LootHistoryPage : UserControl
             "Drop rates" => DropRatesFor(),
             _ => Log(d.Events),
         }, tab => tab == "Items"
-            ? [("Copy summary", () => LootSummary.Breakdown(d.Day, d.Events, values: _store.Values)), ("Copy items", () => LootSummary.ItemsText(d.Day, NameSearch.Filter(d.ItemsWorth, i => i.Item, _searches.GetValueOrDefault("items", "")), ScopeText()))]
+            ? [("Copy summary", () => LootSummary.Breakdown(d.Day, d.Events, values: _store.Values)), ("Copy items", () => LootSummary.ItemsText(d.Day, NameSearch.Filter(d.ItemsWorth, i => i.Item, _searches.GetValueOrDefault("items", "")), ScopeText(), _store.Values))]
             : [("Copy summary", () => LootSummary.Breakdown(d.Day, d.Events, values: _store.Values))],
-        tab => tab == "Items" ? [CustomPricesAction()] : []);
+        tab => tab == "Items" ? [CustomPricesAction(), ScrappedItemsAction()] : []);
     }
 
     private void RenderMember(LootDay day, LootMember m)
@@ -645,11 +645,11 @@ public partial class LootHistoryPage : UserControl
         // Purses are whole and known for anyone; what an autosplit gave a player is known only for the ledger's owner
         AddTile("Purses looted", LootSummary.Coin(m.Purses), Of(m.Purses, t.Copper));
         if (m.You) AddTile("Your coin", (m.EstimatedShares > 0 ? "~" : "") + LootSummary.Coin(m.Copper), m.Received > 0 ? $"{(m.EstimatedShares > 0 ? "~" : "")}{LootSummary.Coin(m.Received)} in splits" : "purses you kept", Palette.Heal);
-        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.Priced, m.Custom, m.Estimated, m.Unpriced));
+        AddTile("Items worth", LootSummary.Worth(m.ItemValue, m.Estimated > 0, m.Unpriced > 0), ItemsNote(m.VendorPriced, m.Custom, m.Scrapped, m.FamilyEstimated, m.PlainUnpriced));
         AddTile("Items", $"{m.Items:N0}", Of(m.Items, t.Items));
         AddTile("Coin per mob", m.Mobs > 0 ? LootSummary.Coin((long)m.CopperPerMob) : "—", m.Mobs > 0 && t.Mobs > 0 ? $"group {LootSummary.Coin(t.Copper / t.Mobs)}" : "");
         AddTile("Items per mob", m.Mobs > 0 ? m.ItemsPerMob.ToString("0.0", CultureInfo.CurrentCulture) : "—", t.Mobs > 0 ? $"group {(double)t.Items / t.Mobs:0.0}" : "");
-        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Value, best.Count));
+        if (m.Taken.OrderByDescending(x => x.Total).FirstOrDefault(x => x.Value.Known) is { } best) AddTile("Best item", best.Item, BestTip(best.Item, best.Value, best.Count));
         if (m.Split > 0) AddTile("Your splits", LootSummary.Coin(m.Split), "from their purses", Palette.Heal);
 
         Tabs(["Items", "Mobs", "Loot log"], tab => tab switch
@@ -657,7 +657,7 @@ public partial class LootHistoryPage : UserControl
             "Items" => MemberItemsTable(m),
             "Mobs" => MemberMobsTable(m),
             _ => Log(day.Events.Where(e => e.Who.Equals(m.Name, StringComparison.OrdinalIgnoreCase))),
-        }, _ => [("Copy summary", () => LootSummary.MemberText(m))], tab => tab == "Items" ? [CustomPricesAction()] : []);
+        }, _ => [("Copy summary", () => LootSummary.MemberText(m))], tab => tab == "Items" ? [CustomPricesAction(), ScrappedItemsAction()] : []);
     }
 
     // ---- Drop rates ---------------------------------------------------------------------------------------------
@@ -687,29 +687,46 @@ public partial class LootHistoryPage : UserControl
 
     // ---- Pieces -------------------------------------------------------------------------------------------------
 
-    /// <summary>"8 priced · 2 custom · 3 estimated · 2 unpriced": how the value of the items is known.</summary>
-    private static string ItemsNote(int priced, int custom, int estimated, int unpriced)
+    /// <summary>"8 priced · 2 custom · 3 scrapped · 1 estimated · 2 unpriced": how the value of the items is known.</summary>
+    private static string ItemsNote(int vendor, int custom, int scrapped, int estimated, int unpriced)
     {
-        int vendor = priced - custom;
         var parts = new[]
         {
             vendor > 0 ? $"{vendor:N0} priced" : "",
             custom > 0 ? $"{custom:N0} custom" : "",
+            scrapped > 0 ? $"{scrapped:N0} scrapped" : "",
             estimated > 0 ? $"{estimated:N0} estimated" : "",
             unpriced > 0 ? $"{unpriced:N0} unpriced" : "",
         }.Where(x => x.Length > 0).ToList();
         return parts.Count == 0 ? "no items" : string.Join(" · ", parts);
     }
 
-    private static string BestTip(ItemValue v, int count) =>
-        v.Custom ? $"{LootSummary.Coin(v.Each)} each (custom) · {count:N0} taken"
-        : $"{(v.Estimated ? "~" : "")}{LootSummary.Coin(v.Each)} each · {count:N0} taken";
+    private string BestTip(string item, ItemValue v, int count)
+    {
+        if (v.Scrap)
+        {
+            var yields = _store.Values.ScrapOf(item);
+            var yieldText = yields is { Count: > 0 } ? ScrapItems.DescribeYields(yields) : "materials";
+            return !v.Known
+                ? $"scraps into {yieldText} · {count:N0} taken"
+                : $"{(v.Estimated ? "~" : "")}{LootSummary.Coin(v.Each)} each (scrap → {yieldText}) · {count:N0} taken";
+        }
+        return v.Custom ? $"{LootSummary.Coin(v.Each)} each (custom) · {count:N0} taken"
+            : $"{(v.Estimated ? "~" : "")}{LootSummary.Coin(v.Each)} each · {count:N0} taken";
+    }
 
     private (string Label, string Tip, Action Click) CustomPricesAction()
     {
         int n = _store.CustomPrices.Count;
         return (n > 0 ? $"Custom prices ({n:N0})…" : "Custom prices…", "Set, change or clear custom item prices",
             () => CustomPricesWindow.Open(Window.GetWindow(this), _store));
+    }
+
+    private (string Label, string Tip, Action Click) ScrappedItemsAction()
+    {
+        int n = _store.ScrapItems.Count;
+        return (n > 0 ? $"Scrapped items ({n:N0})…" : "Scrapped items…", "Set, edit or stop items marked to scrap instead of sell",
+            () => CustomPricesWindow.Open(Window.GetWindow(this), _store, scrapTab: true));
     }
 
     private void AddTile(string label, string value, string sub, Brush? accent = null)
@@ -804,35 +821,71 @@ public partial class LootHistoryPage : UserControl
     }
 
     private FrameworkElement ItemsTable(LootDay d, bool search = true) =>
-        Searchable("items", "Search items by name", search, d.ItemsWorth, i => i.Item, rows => Table.Build("loot-items", rows, new Col<ItemWorth>[]
+        WithScrapYield(Searchable("items", "Search items by name", search, d.ItemsWorth, i => i.Item, rows => Table.Build("loot-items", rows, new Col<ItemWorth>[]
         {
-            new("Item", 0, i => i.Item, i => i.Item, Right: false),
+            new("Item", 0, i => i.Value.Scrap ? $"{i.Item}  (scrap)" : i.Item, i => i.Item, Right: false),
             new("Taken", 60, i => $"{i.Count:N0}", i => i.Count),
             new("Each", 92, i => EachText(i.Value), i => i.Value.Each,
-                Tip: "What one is worth (vendor sale, ~ family estimate, or your custom price). Click or right-click a row to set a custom price."),
+                Tip: "What one is worth (vendor sale, ~ family estimate, custom price, or scrap yield). Click or right-click a row to configure."),
             new("Worth", 100, i => i.Value.Known ? (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total) : "—", i => i.Total),
             new("Looters", 62, i => $"{i.By.Count:N0}", i => i.By.Count),
             new("Taken by", 270, i => string.Join(", ", i.By.Take(4).Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who)) + (i.By.Count > 4 ? $" +{i.By.Count - 4}" : ""),
                 Right: false),
         }, Rebuild, defaultSort: 3, bar: i => i.Total, color: _ => Palette.You,
-        click: i => CustomPriceDialog.Open(Window.GetWindow(this), _store, i.Item),
+        click: i => PriceMenu.OpenDefault(Window.GetWindow(this), _store, i.Item),
         rowTip: i => ItemRowTip(i.Item, i.Value, string.Join("\n", i.By.Select(b => $"{b.Who}: {b.Count}"))),
-        copy: LootSummary.ItemLine,
-        menu: i => PriceMenu.For(this, _store, i.Item)));
+        copy: i => LootSummary.ItemLine(i, _store.Values),
+        menu: i => PriceMenu.For(this, _store, i.Item))), d.ScrapMaterials, "loot-scrap-yield");
 
-    private static string EachText(ItemValue v) => !v.Known ? "—" : (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each);
+    private static string EachText(ItemValue v) => !v.Known ? (v.Scrap ? "scrap" : "—") : (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each);
 
     private string ItemRowTip(string item, ItemValue value, string detail)
     {
         var lines = new List<string>();
-        if (value.Custom)
+        if (value.Scrap)
+        {
+            var yields = _store.Values.ScrapOf(item);
+            var yieldText = yields is { Count: > 0 } ? ScrapItems.DescribeYields(yields) : "materials";
+            var natural = _store.Values.NaturalOf(item);
+            var worthText = value.Known ? $"{(value.Estimated ? "~" : "")}{LootSummary.Coin(value.Each)} each" : "material unpriced";
+            lines.Add($"Scrapped into {yieldText}: {worthText}" + (natural.Known ? $" (vendor {(natural.Estimated ? "~" : "")}{LootSummary.Coin(natural.Each)})" : ""));
+        }
+        else if (value.Custom)
         {
             var natural = _store.Values.NaturalOf(item);
             lines.Add($"Custom price: {LootSummary.Coin(value.Each)} each" + (natural.Known ? $" (vendor {(natural.Estimated ? "~" : "")}{LootSummary.Coin(natural.Each)})" : ""));
         }
         if (detail.Length > 0) lines.Add(detail);
-        lines.Add("Click or right-click to set a custom price");
+        lines.Add("Click or right-click to change price or scrap yield");
         return string.Join("\n", lines);
+    }
+
+    private FrameworkElement WithScrapYield(FrameworkElement itemsView, IReadOnlyList<ScrapMaterialWorth> materials, string tableId)
+    {
+        if (materials.Count == 0) return itemsView;
+        var panel = new StackPanel();
+        panel.Children.Add(itemsView);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Expected scrap yield",
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Palette.Text,
+            Margin = new Thickness(8, 16, 0, 6),
+        });
+        panel.Children.Add(Table.Build(tableId, materials, new Col<ScrapMaterialWorth>[]
+        {
+            new("Material", 0, m => m.Material, m => m.Material, Right: false),
+            new("Yield", 66, m => $"{m.Count:N0}", m => m.Count),
+            new("Each", 92, m => EachText(m.Value), m => m.Value.Each, Tip: "What one unit of this material is worth"),
+            new("Worth", 100, m => m.Value.Known ? (m.Value.Estimated ? "~" : "") + LootSummary.Coin(m.Total) : "—", m => m.Total),
+            new("From scrapped items", 280, m => string.Join(", ", m.From.Take(3).Select(f => f.ItemCount > 1 ? $"{f.Item} ×{f.ItemCount}" : f.Item)) + (m.From.Count > 3 ? $" +{m.From.Count - 3}" : ""), Right: false),
+        }, Rebuild, defaultSort: 3, bar: m => m.Total, color: _ => Palette.Gold,
+        click: m => PriceMenu.OpenDefault(Window.GetWindow(this), _store, m.Material),
+        rowTip: m => ItemRowTip(m.Material, m.Value, string.Join("\n", m.From.Select(f => $"from {f.Item}{(f.ItemCount > 1 ? $" ×{f.ItemCount}" : "")} → ×{f.MaterialCount:N0}"))),
+        copy: m => $"{m.Material} ×{m.Count:N0}  ·  {(m.Value.Known ? (m.Value.Estimated ? "~" : "") + LootSummary.Coin(m.Total) : "no known price")}  ·  from {string.Join(", ", m.From.Select(f => f.ItemCount > 1 ? $"{f.Item} ×{f.ItemCount}" : f.Item))}",
+        menu: m => PriceMenu.For(this, _store, m.Material)));
+        return panel;
     }
 
     /// <summary>
@@ -855,21 +908,21 @@ public partial class LootHistoryPage : UserControl
         }, Rebuild, bar: m => m.Looted, color: _ => Palette.Taken));
 
     private FrameworkElement MemberItemsTable(LootMember m, bool search = true) =>
-        Searchable("items", "Search items by name", search, m.Taken, i => i.Item, rows => Table.Build("loot-member-items", rows, new Col<MemberItem>[]
+        WithScrapYield(Searchable("items", "Search items by name", search, m.Taken, i => i.Item, rows => Table.Build("loot-member-items", rows, new Col<MemberItem>[]
         {
-            new("Item", 0, i => i.Item, i => i.Item, Right: false),
+            new("Item", 0, i => i.Value.Scrap ? $"{i.Item}  (scrap)" : i.Item, i => i.Item, Right: false),
             new("Taken", 60, i => $"{i.Count:N0}", i => i.Count),
             new("Each", 92, i => EachText(i.Value), i => i.Value.Each,
-                Tip: "What one is worth (vendor sale, ~ family estimate, or your custom price). Click or right-click a row to set a custom price."),
+                Tip: "What one is worth (vendor sale, ~ family estimate, custom price, or scrap yield). Click or right-click a row to configure."),
             new("Worth", 100, i => i.Value.Known ? (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total) : "—", i => i.Total),
             new("Group share", 104, i => i.GroupCount > i.Count ? $"{Fmt.Pct(i.Share)} of {i.GroupCount:N0}" : "all of them", i => i.Share,
                 Tip: "How many of that item the group took, and how many of those this player took"),
             new("Mostly from", 200, i => i.MostlyFrom, i => i.MostlyFrom, Right: false),
         }, Rebuild, defaultSort: 3, bar: i => i.Total, color: _ => BrushOf(m),
-        click: i => CustomPriceDialog.Open(Window.GetWindow(this), _store, i.Item),
+        click: i => PriceMenu.OpenDefault(Window.GetWindow(this), _store, i.Item),
         rowTip: i => ItemRowTip(i.Item, i.Value, i.MostlyFrom.Length > 0 ? $"Mostly from {i.MostlyFrom}" : ""),
-        copy: LootSummary.MemberItemLine,
-        menu: i => PriceMenu.For(this, _store, i.Item)));
+        copy: i => LootSummary.MemberItemLine(i, _store.Values),
+        menu: i => PriceMenu.For(this, _store, i.Item))), m.ScrapMaterials, "loot-member-scrap-yield");
 
     /// <summary>A player's monsters; with <paramref name="coin"/> off (the answer to a search, which is about items) the purse columns are left out.</summary>
     private FrameworkElement MemberMobsTable(LootMember m, bool coin = true) =>

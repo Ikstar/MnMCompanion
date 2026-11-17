@@ -216,7 +216,7 @@ internal sealed class LootPanel : Border, IMiniPage
         _total.Text = LootSummary.Worth(d.Total, d.Approximate, d.Unpriced > 0 || d.Unrecorded > 0);
         _totalNote.Text = $"coin {LootSummary.Coin(totals.Copper)} + items {LootSummary.Worth(d.ItemValue, d.Approximate, d.Unrecorded > 0)}";
         _totalBlock.ToolTip = $"Everyone's: coin {LootSummary.Coin(totals.Copper)} (every purse counted once, whole) plus what a vendor would pay for the items: {LootSummary.Worth(d.ItemValue, d.Approximate, d.Unpriced > 0)}" + Environment.NewLine +
-                              $"{d.Priced - d.Custom:N0} items priced from vendor sales" + (d.Custom > 0 ? $", {d.Custom:N0} at your custom prices" : "") + $", {d.Estimated:N0} valued by their family (~), {d.Unpriced:N0} with no known price (not counted, +)" + Environment.NewLine + Click + _coinLine;
+                              $"{d.VendorPriced:N0} items priced from vendor sales" + (d.Custom > 0 ? $", {d.Custom:N0} at your custom prices" : "") + (d.Scrapped > 0 ? $", {d.Scrapped:N0} scrapped" : "") + $", {d.FamilyEstimated:N0} valued by their family (~), {d.PlainUnpriced:N0} with no known price (not counted, +)" + Environment.NewLine + Click + _coinLine;
         _ours.Text = mine ? LootSummary.Worth(ours.Total, ours.Approximate, ours.Unpriced > 0 || ours.Unrecorded > 0) : "—";
         _oursNote.Text = mine ? $"coin {(ours.EstimatedShares > 0 ? "~" : "")}{LootSummary.Coin(ours.Copper)} + items {LootSummary.Worth(ours.ItemValue, ours.Estimated > 0, ours.Unrecorded > 0)}" : "nothing of yours yet";
         _oursBlock.ToolTip = mine
@@ -244,7 +244,7 @@ internal sealed class LootPanel : Border, IMiniPage
             : _note.Length > 0 ? _note
             : _compact ? ""
             : d.Unrecorded > 0 ? $"{Plural(d.Unrecorded, "corpse")}: items missing from the ledger (names with an apostrophe)"
-            : d.Unpriced > 0 ? $"{Plural(d.Unpriced, "item")} unpriced (+): right-click on Items to price, or sell one"
+            : d.Unpriced > 0 ? $"{Plural(d.Unpriced, "item")} unpriced (+): right-click on Items to price, scrap, or sell one"
             : "");
         _note = "";
         _status.ToolTip = !_compact && d.Unrecorded > 0 ? Unrecorded : null;
@@ -320,8 +320,9 @@ internal sealed class LootPanel : Border, IMiniPage
                 m.ClassLevel.Length > 0 ? m.ClassLevel : "", $"{Plural(m.Mobs, "mob")}, {LootSummary.ItemsOf(m)}",
                 m.Unrecorded > 0 ? $"{Plural(m.Unrecorded, "corpse")} of theirs have no items in the ledger (the game can't record monsters with an apostrophe in their name)" : "",
                 $"items worth {LootSummary.Worth(m.ItemValue, m.Estimated > 0, false)} to a vendor",
-                m.Unpriced > 0 ? $"{Plural(m.Unpriced, "item")} with no known price are not counted" : "",
-                m.Estimated > 0 ? $"{Plural(m.Estimated, "item")} valued by their family (~)" : "",
+                m.Scrapped > 0 ? $"{Plural(m.Scrapped, "item")} scrapped into materials" : "",
+                m.PlainUnpriced > 0 ? $"{Plural(m.PlainUnpriced, "item")} with no known price are not counted" : "",
+                m.FamilyEstimated > 0 ? $"{Plural(m.FamilyEstimated, "item")} valued by their family (~)" : "",
                 m.Mobs > 0 ? $"{m.ItemsPerMob:0.0} items a mob" : "",
                 "Click for their items and mobs",
             }.Where(s => s.Length > 0));
@@ -345,40 +346,105 @@ internal sealed class LootPanel : Border, IMiniPage
     {
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         int customCount = _store.CustomPrices.Count;
+        int scrapCount = _store.ScrapItems.Count;
+        string manageLabel = (customCount, scrapCount) switch
+        {
+            ( > 0, > 0) => $"Custom ({customCount:N0}) · Scrap ({scrapCount:N0})",
+            (0, > 0) => $"Scrapped ({scrapCount:N0})",
+            ( > 0, 0) => $"Custom ({customCount:N0})",
+            _ => "Custom / scrap",
+        };
         var manage = new Button
         {
-            Content = customCount > 0 ? $"Custom ({customCount:N0})" : "Custom prices",
+            Content = manageLabel,
             Style = (Style)Ui.Theme["TextButton"],
             Padding = new Thickness(9, 3, 9, 3),
             Margin = new Thickness(4, 0, 0, 0),
-            ToolTip = "View, add or change custom item prices (or right-click any item below)",
+            ToolTip = "View, add or change custom item prices and scrapped items (or right-click any item below)",
         };
-        manage.Click += (_, _) => CustomPricesWindow.Open(Window.GetWindow(this), _store);
+        manage.Click += (_, _) => CustomPricesWindow.Open(Window.GetWindow(this), _store, scrapTab: scrapCount > 0 && customCount == 0);
         actions.Children.Add(manage);
         if (d.ItemsWorth.Count > 0)
         {
-            var copy = (Button)CopyBar("Copy items", "the items", () => LootSummary.ItemsText(Day, d.ItemsWorth, _session.ScopeLabel()));
+            var copy = (Button)CopyBar("Copy items", "the items", () => LootSummary.ItemsText(Day, d.ItemsWorth, _session.ScopeLabel(), _store.Values));
             copy.Margin = new Thickness(4, 0, 0, 0);
             actions.Children.Add(copy);
         }
         _copyHost.Child = actions;
 
         if (d.ItemsWorth.Count == 0) { _body.Children.Add(Line("No items looted.", Palette.Muted)); return; }
+        if (d.ScrapMaterials.Count > 0 && d.ItemsWorth.Count > 10)
+        {
+            var summary = string.Join(", ", d.ScrapMaterials.Take(3).Select(m => m.Count > 1 ? $"{m.Material} ×{m.Count}" : m.Material))
+                + (d.ScrapMaterials.Count > 3 ? $" +{d.ScrapMaterials.Count - 3}" : "");
+            _body.Children.Add(new TextBlock
+            {
+                Text = $"Scrapping {Plural(d.Scrapped, "item")} → {summary}",
+                Foreground = Palette.Muted,
+                FontSize = 11,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(2, 0, 2, 4),
+            });
+        }
+
         double top = Math.Max(1, d.ItemsWorth.Max(i => (double)i.Total));
         int rank = 0;
         foreach (var i in d.ItemsWorth.Take(60))
             _body.Children.Add(ItemRow(++rank, i, top));
         if (d.ItemsWorth.Count > 60) _body.Children.Add(Line($"{d.ItemsWorth.Count - 60} more kinds are in the full breakdown.", Palette.Muted));
+
+        if (d.ScrapMaterials.Count > 0)
+        {
+            _body.Children.Add(new TextBlock
+            {
+                Text = $"SCRAP YIELD · FROM {Plural(d.Scrapped, "ITEM").ToUpperInvariant()}",
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Palette.Muted,
+                Margin = new Thickness(2, 10, 2, 3),
+            });
+            double scrapTop = Math.Max(1, d.ScrapMaterials.Max(m => (double)m.Total));
+            int scrapRank = 0;
+            foreach (var m in d.ScrapMaterials)
+            {
+                var mat = m;
+                var fromShort = string.Join(", ", mat.From.Take(2).Select(f => f.ItemCount > 1 ? $"{f.Item} ×{f.ItemCount}" : f.Item))
+                    + (mat.From.Count > 2 ? $" +{mat.From.Count - 2}" : "");
+                var matWorth = !mat.Value.Known ? "—" : (mat.Value.Estimated ? "~" : "") + LootSummary.Coin(mat.Total);
+                var matTip = (mat.Value.Known
+                    ? $"{(mat.Value.Estimated ? "about " : "")}{LootSummary.Coin(mat.Value.Each)} each ({SourceWord(mat.Value.Source)})"
+                    : "No known price for this material yet (right-click to set a custom price)")
+                    + Environment.NewLine
+                    + string.Join(Environment.NewLine, mat.From.Select(f => $"from {f.Item}{(f.ItemCount > 1 ? $" ×{f.ItemCount}" : "")} → ×{f.MaterialCount:N0}"));
+                _body.Children.Add(Row(++scrapRank, mat.Count > 1 ? $"{mat.Material} ×{mat.Count}" : mat.Material,
+                    "from " + fromShort, matWorth, Palette.Gold, mat.Total / scrapTop, matTip,
+                    () => _openBreakdown(Day, null, ActiveSession()),
+                    copy: () => $"{mat.Material} ×{mat.Count:N0}  ·  {(mat.Value.Known ? (mat.Value.Estimated ? "~" : "") + LootSummary.Coin(mat.Total) : "no known price")}  ·  from {fromShort}",
+                    menu: () => PriceMenu.For(this, _store, mat.Material)));
+            }
+        }
     }
 
     /// <summary>One item's row on the Items tab (and the compact page): who looted it, what it is worth, and a button that copies its summary.</summary>
     private FrameworkElement ItemRow(int rank, ItemWorth i, double top)
     {
         var takers = string.Join(", ", i.By.Take(2).Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who)) + (i.By.Count > 2 ? $" +{i.By.Count - 2}" : "");
-        var sub = i.Value.Custom ? (takers.Length > 0 ? $"custom · {takers}" : "custom") : takers;
+        var sub = i.Value.Scrap
+            ? (takers.Length > 0 ? $"scrap · {takers}" : "scrap")
+            : i.Value.Custom ? (takers.Length > 0 ? $"custom · {takers}" : "custom") : takers;
         var value = !i.Value.Known ? "—" : (i.Value.Estimated ? "~" : "") + LootSummary.Coin(i.Total);
         string priceTip;
-        if (i.Value.Custom)
+        if (i.Value.Scrap)
+        {
+            var yields = _store.Values.ScrapOf(i.Item);
+            var yieldText = yields is { Count: > 0 } ? ScrapItems.DescribeYields(yields) : "materials";
+            var natural = _store.Values.NaturalOf(i.Item);
+            var natText = natural.Known ? $"; vendor {(natural.Estimated ? "~" : "")}{LootSummary.Coin(natural.Each)}" : "";
+            priceTip = i.Value.Known
+                ? $"Scraps into {yieldText}: {(i.Value.Estimated ? "about " : "")}{LootSummary.Coin(i.Value.Each)} each{natText}" + Environment.NewLine + "Right-click to change or stop scrapping." + Environment.NewLine
+                : $"Scraps into {yieldText} (at least one material has no known price yet{natText})" + Environment.NewLine + "Right-click to change, stop scrapping, or price materials." + Environment.NewLine;
+        }
+        else if (i.Value.Custom)
         {
             var natural = _store.Values.NaturalOf(i.Item);
             var natText = natural.Known ? $"; vendor {(natural.Estimated ? "~" : "")}{LootSummary.Coin(natural.Each)}" : "";
@@ -386,21 +452,24 @@ internal sealed class LootPanel : Border, IMiniPage
         }
         else if (i.Value.Known)
         {
-            priceTip = $"{(i.Value.Estimated ? "about " : "")}{LootSummary.Coin(i.Value.Each)} each to a vendor ({SourceWord(i.Value.Source)})" + Environment.NewLine + "Right-click to set a custom price." + Environment.NewLine;
+            priceTip = $"{(i.Value.Estimated ? "about " : "")}{LootSummary.Coin(i.Value.Each)} each to a vendor ({SourceWord(i.Value.Source)})" + Environment.NewLine + "Right-click to set a custom price or scrap." + Environment.NewLine;
         }
         else
         {
-            priceTip = "No known price: no vendor sale of it in your ledgers." + Environment.NewLine + "Right-click to set a custom price, or sell one to a vendor." + Environment.NewLine;
+            priceTip = "No known price: no vendor sale of it in your ledgers." + Environment.NewLine + "Right-click to set a custom price, scrap, or sell one to a vendor." + Environment.NewLine;
         }
         var tip = priceTip + string.Join(Environment.NewLine, i.By.Select(b => $"{b.Who}: {b.Count}"));
         var item = i;
         return Row(rank, i.Count > 1 ? $"{i.Item} ×{i.Count}" : i.Item, sub, value, Palette.You, i.Total / top, tip, () => _openBreakdown(Day, null, ActiveSession()),
-            copy: () => LootSummary.ItemLine(item), menu: () => PriceMenu.For(this, _store, item.Item));
+            copy: () => LootSummary.ItemLine(item, _store.Values), menu: () => PriceMenu.For(this, _store, item.Item));
     }
 
     private static string SourceWord(Loot.ValueSource s) => s switch
     {
         Loot.ValueSource.Custom => "your custom price",
+        Loot.ValueSource.Scrap => "from scrap yield",
+        Loot.ValueSource.ScrapEstimated => "from estimated scrap yield",
+        Loot.ValueSource.ScrapUnpriced => "scrap material unpriced",
         Loot.ValueSource.Sold => "what vendors paid you",
         Loot.ValueSource.Public => "public price list",
         Loot.ValueSource.Charged => "from vendor stock price",

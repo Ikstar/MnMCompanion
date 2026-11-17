@@ -44,26 +44,29 @@ internal sealed class HarvestPage(HistoryFocus focus, HistoryData data, HistoryV
         if (items.Count > 0) AddTile("Most gathered", items[0].Item, $"{items[0].Units:N0} items");
 
         Tabs(["Items", "Log"], tab => tab == "Items" ? ItemsTable(items, totals) : Log(rows), tab => [("Copy summary", () => Summary(totals, items, Worth()))],
-            tab => tab == "Items" ? [(Store.CustomPrices.Count > 0 ? $"Custom prices ({Store.CustomPrices.Count:N0})…" : "Custom prices…", "Set, change or clear custom item prices", () => CustomPricesWindow.Open(Window.GetWindow(this), Store))] : []);
+            tab => tab == "Items" ? [
+                (Store.CustomPrices.Count > 0 ? $"Custom prices ({Store.CustomPrices.Count:N0})…" : "Custom prices…", "Set, change or clear custom item prices", () => CustomPricesWindow.Open(Window.GetWindow(this), Store)),
+                (Store.ScrapItems.Count > 0 ? $"Scrapped items ({Store.ScrapItems.Count:N0})…" : "Scrapped items…", "Set, edit or stop items marked to scrap instead of sell", () => CustomPricesWindow.Open(Window.GetWindow(this), Store, scrapTab: true)),
+            ] : []);
     }
 
     private FrameworkElement ItemsTable(IReadOnlyList<HarvestItem> items, HarvestTotals totals) =>
         Table.Build("harvest-items", items, new Col<HarvestItem>[]
         {
-            new("Item", 0, i => i.Item, i => i.Item, Right: false),
+            new("Item", 0, i => Store.Values.Of(i.Item).Scrap ? $"{i.Item}  (scrap)" : i.Item, i => i.Item, Right: false),
             new("Harvests", 72, i => $"{i.Harvests:N0}", i => i.Harvests),
             new("Items", 64, i => $"{i.Units:N0}", i => i.Units),
             new("Per hour", 74, i => totals.Active.TotalMinutes >= 1 ? (i.Units / totals.Active.TotalHours).ToString("N0", CultureInfo.CurrentCulture) : "—", i => i.Units,
                 Tip: "Items an hour over all the time spent gathering, so the rows add up to the total"),
-            new("Each", 92, i => Price(i.Item), i => Store.Values.Of(i.Item).Each, Tip: "What one is worth (vendor price, ~ estimated, or your custom price). Click or right-click a row to set a custom price"),
+            new("Each", 92, i => Price(i.Item), i => Store.Values.Of(i.Item).Each, Tip: "What one is worth (vendor price, ~ estimated, custom price, or scrap yield). Click or right-click a row to configure"),
             new("Worth", 100, i => Store.Values.Of(i.Item) is { Known: true } v ? (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each * i.Units) : "—", i => Store.Values.Of(i.Item).Each * i.Units),
             new("Where", 220, i => string.Join(", ", i.Zones.Take(3)) + (i.Zones.Count > 3 ? $" +{i.Zones.Count - 3}" : ""), i => i.Zones.Count > 0 ? i.Zones[0] : "", Right: false),
             new("Last", 120, i => When(i.Last), i => i.Last, Right: false),
         }, Rebuild, defaultSort: 2, bar: i => i.Units, color: _ => Palette.Heal,
-        click: i => CustomPriceDialog.Open(Window.GetWindow(this), Store, i.Item),
+        click: i => PriceMenu.OpenDefault(Window.GetWindow(this), Store, i.Item),
         menu: i => PriceMenu.For(this, Store, i.Item));
 
-    private string Price(string item) => Store.Values.Of(item) is { Known: true } v ? (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each) : "—";
+    private string Price(string item) => Store.Values.Of(item) is var v && v.Known ? (v.Estimated ? "~" : "") + LootSummary.Coin(v.Each) : v.Scrap ? "scrap" : "—";
 
     private FrameworkElement Log(List<HarvestRow> rows)
     {

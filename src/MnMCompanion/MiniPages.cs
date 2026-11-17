@@ -325,8 +325,15 @@ internal sealed class VendorMini(LootStore store, HistoryData? data, SessionScop
         }
     }
 
-    private FrameworkElement ItemRow(int rank, VendorItem i, Brush brush, double top) =>
-        RankRow(rank, i.Item, Plural(i.Units, "item"), Coin(i.Total), brush, i.Total / top, $"{Plural(i.Stacks, "stack")} · {Coin(i.Each)} each · last {i.Last:HH:mm}");
+    private FrameworkElement ItemRow(int rank, VendorItem i, Brush brush, double top)
+    {
+        var item = i;
+        var scrap = Store.ScrapItems.TryGet(i.Item, out _);
+        var sub = scrap ? $"scrap · {Plural(i.Units, "item")}" : Plural(i.Units, "item");
+        return RankRow(rank, i.Item, sub, Coin(i.Total), brush, i.Total / top,
+            $"{Plural(i.Stacks, "stack")} · {Coin(i.Each)} each · last {i.Last:HH:mm}",
+            menu: () => PriceMenu.For(this, Store, item.Item));
+    }
 
     private void Items(IReadOnlyList<VendorRow> rows, VendorDirection direction, Brush brush)
     {
@@ -430,8 +437,11 @@ internal sealed class ItemsMini(LootStore store, HistoryData? data, SessionScope
         double top = Math.Max(1, lost.Max(i => (double)i.Lost));
         int rank = 0;
         foreach (var i in lost.Take(60))
+        {
+            var item = i;
             Body.Children.Add(RankRow(++rank, i.Item, $"{i.Dropped:N0} dropped · {i.Destroyed:N0} destroyed", "−" + i.Lost.ToString("N0"), Palette.Taken, i.Lost / top,
-                $"{i.PickedUp:N0} picked up again"));
+                $"{i.PickedUp:N0} picked up again", menu: () => PriceMenu.For(this, Store, item.Item)));
+        }
     }
 }
 
@@ -485,7 +495,9 @@ internal sealed class HarvestMini(LootStore store, HistoryData? data, SessionSco
     {
         var v = Store.Values.Of(i.Item);
         var worth = v.Known ? (v.Estimated ? "~" : "") + Coin(v.Each * i.Units) : "";
-        return RankRow(rank, i.Item, worth.Length > 0 ? $"worth {worth}" : Plural(i.Harvests, "harvest"), "×" + i.Units.ToString("N0"), Palette.Heal, i.Units / top,
+        var sub = worth.Length > 0 ? (v.Scrap ? $"scrap · {worth}" : $"worth {worth}")
+            : v.Scrap ? "scrap" : Plural(i.Harvests, "harvest");
+        return RankRow(rank, i.Item, sub, "×" + i.Units.ToString("N0"), Palette.Heal, i.Units / top,
             $"{Plural(i.Harvests, "harvest")} · {string.Join(", ", i.Zones.Select(ZoneMaps.DisplayName))}",
             menu: () => PriceMenu.For(this, Store, i.Item));
     }

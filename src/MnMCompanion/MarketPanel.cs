@@ -501,7 +501,7 @@ internal sealed class MarketPanel : Border, IMiniPage
         {
             if (!_open.Remove(item.Key)) _open.Add(item.Key);
             Rebuild();
-        });
+        }, menu: () => PriceMenu.For(this, _store, item.Name, Rebuild));
     }
 
     /// <summary>What a click on an item opens: the wiki's line about it, the headline prices, who asks and bids, the days and the changes.</summary>
@@ -627,43 +627,75 @@ internal sealed class MarketPanel : Border, IMiniPage
             _body.Children.Add(Note($"{scope}: you looted no items.", Palette.Muted));
             return;
         }
-        var counted = events.GroupBy(e => e.Item, StringComparer.OrdinalIgnoreCase).Select(g => (Name: g.Key, Count: g.Sum(e => Math.Max(1, e.Count)), Item: market.Named(g.Key))).ToList();
-        var priced = counted.Where(c => c.Item is { Headline: not null }).Select(c => (c.Name, c.Count, Item: c.Item!, Each: c.Item!.Headline!.Value, Worth: c.Item!.Headline!.Value * c.Count)).OrderByDescending(c => c.Worth).ThenBy(c => c.Name).ToList();
-        var unpriced = counted.Where(c => c.Item is not { Headline: not null }).OrderByDescending(c => c.Count).ThenBy(c => c.Name).ToList();
-        long total = priced.Sum(p => p.Worth);
+        var grouped = events.GroupBy(e => e.Item, StringComparer.OrdinalIgnoreCase).Select(g => (Name: g.Key, Count: g.Sum(e => Math.Max(1, e.Count)))).ToList();
+        var summary = MarketMath.Yours(grouped, market, _store.ScrapItems);
+        bool anyScrap = summary.Priced.Any(p => p.Scrapped) || summary.Unpriced.Any(u => u.Scrapped);
 
         var head = new DockPanel { Margin = new Thickness(2, 2, 2, 4) };
         var right = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right };
         DockPanel.SetDock(right, Dock.Right);
-        right.Children.Add(new TextBlock { Text = MarketMath.Coin(total), FontSize = 22, FontWeight = FontWeights.SemiBold, Foreground = Palette.Gold, HorizontalAlignment = HorizontalAlignment.Right }.UseDisplay());
+        right.Children.Add(new TextBlock { Text = MarketMath.Coin(summary.Total), FontSize = 22, FontWeight = FontWeights.SemiBold, Foreground = Palette.Gold, HorizontalAlignment = HorizontalAlignment.Right }.UseDisplay());
         right.Children.Add(new TextBlock { Text = $"at {market.Server}'s middle asks", FontSize = 10, Foreground = Palette.Muted, HorizontalAlignment = HorizontalAlignment.Right });
         head.Children.Add(right);
         var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        left.Children.Add(new TextBlock { Text = "Your loot, if sold to players", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Palette.Text });
-        left.Children.Add(new TextBlock { Text = $"{scope} · {priced.Count} of {counted.Count} items have a price", FontSize = 11, Foreground = Palette.Muted, TextTrimming = TextTrimming.CharacterEllipsis });
+        left.Children.Add(new TextBlock { Text = anyScrap ? "Your loot, if sold or scrapped" : "Your loot, if sold to players", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Palette.Text });
+        left.Children.Add(new TextBlock { Text = $"{scope} · {summary.Priced.Count} of {summary.DistinctCount} items have a price", FontSize = 11, Foreground = Palette.Muted, TextTrimming = TextTrimming.CharacterEllipsis });
         head.Children.Add(left);
         _body.Children.Add(head);
 
-        if (priced.Count > 0)
+        if (summary.Priced.Count > 0)
         {
-            double most = Math.Max(1, priced[0].Worth);
+            double most = Math.Max(1, summary.Priced[0].Worth);
             int rank = 0;
-            foreach (var p in priced)
+            foreach (var p in summary.Priced)
             {
                 var row = p;
                 int n = ++rank;
-                Emit(() => LootPanel.Row(n, row.Name, $"×{row.Count} · {MarketMath.Shown(row.Each, row.Item.Stack)}" + (row.Item.Stack is not null ? $" ({MarketMath.Coin(row.Each)} each)" : ""), MarketMath.Coin(row.Worth), Palette.Gold, row.Worth / most,
-                    row.Item.Asks.Count > 0 ? $"{Plural(row.Item.Sellers, "seller")} asking; the middle ask is used." : "No seller these 3 days: the best bid is used.", () =>
-                    {
-                        if (!_open.Remove(row.Item.Key)) _open.Add(row.Item.Key);
-                        Rebuild();
-                    }));
+                string sub = row.Scrapped
+                    ? $"×{row.Count} · scrap → {ScrapItems.DescribeYields(row.Yields, row.Count)}"
+                    : $"×{row.Count} · {MarketMath.Shown(row.Each, row.Item.Stack)}" + (row.Item.Stack is not null ? $" ({MarketMath.Coin(row.Each)} each)" : "");
+                string value = MarketMath.Coin(row.Worth) + (row.PartialScrap ? "+" : "");
+                string tip = row.Scrapped
+                    ? ScrapMarketTip(row)
+                    : row.Item.Asks.Count > 0 ? $"{Plural(row.Item.Sellers, "seller")} asking; the middle ask is used." : "No seller these 3 days: the best bid is used.";
+                Emit(() => LootPanel.Row(n, row.Name, sub, value, Palette.Gold, row.Worth / most, tip, () =>
+                {
+                    if (!_open.Remove(row.Item.Key)) _open.Add(row.Item.Key);
+                    Rebuild();
+                }, menu: () => PriceMenu.For(this, _store, row.Name, Rebuild)));
                 if (_open.Contains(row.Item.Key)) Emit(() => Details(row.Item));
             }
         }
-        if (unpriced.Count > 0)
-            Emit(() => Note("No price on the market yet: " + string.Join(", ", unpriced.Select(u => u.Count > 1 ? $"{u.Name} ×{u.Count}" : u.Name)) + ".", Palette.Muted));
-        Emit(() => Note("Worth is the middle standing ask times how many you looted; a stack's worth counts each piece at the stack price over the stack size. Posts are asks, not sales.", Palette.Muted));
+        if (summary.Unpriced.Count > 0)
+        {
+            var names = summary.Unpriced.Select(u =>
+            {
+                var label = u.Count > 1 ? $"{u.Name} ×{u.Count}" : u.Name;
+                return u.Scrapped ? $"{label} (→ {ScrapItems.DescribeYields(u.Yields, u.Count)})" : label;
+            });
+            Emit(() => Note("No price on the market yet: " + string.Join(", ", names) + ".", Palette.Muted));
+        }
+        Emit(() => Note("Worth is the middle standing ask times how many you looted (or yielded materials for scrapped items); a stack's worth counts each piece at the stack price over the stack size. Posts are asks, not sales.", Palette.Muted));
+    }
+
+    private static string ScrapMarketTip(MarketYoursItem row)
+    {
+        var lines = new List<string>(row.Parts.Count + 1);
+        foreach (var part in row.Parts)
+        {
+            if (part.UnitCopper is { } u && part.Item is { } mi)
+            {
+                long sub = u * part.TotalQty;
+                var stackNote = mi.Stack is not null ? $" ({MarketMath.Shown(u, mi.Stack)})" : "";
+                lines.Add($"{part.Material} ×{part.TotalQty:N0}: {MarketMath.Coin(sub)}{stackNote}");
+            }
+            else
+            {
+                lines.Add($"{part.Material} ×{part.TotalQty:N0}: no market price yet");
+            }
+        }
+        lines.Add("Click for the material's market breakdown; right-click to change scrap yield.");
+        return string.Join("\n", lines);
     }
 
     // ------------------------------------------------------------------ Buying
@@ -684,7 +716,8 @@ internal sealed class MarketPanel : Border, IMiniPage
                 var it = item;
                 int n = ++rank;
                 Emit(() => LootPanel.Row(n, it.Name, Plural(it.Buyers, "buyer") + (it.Sellers > 0 ? $" · {Plural(it.Sellers, "seller")}" : " · no seller"), MarketMath.Shown(it.BestBid!.Value, it.Stack), Palette.Heal, it.Buyers / most,
-                    it.Card?.Summary() ?? "", () => { if (!_open.Remove(it.Key)) _open.Add(it.Key); Rebuild(); }));
+                    it.Card?.Summary() ?? "", () => { if (!_open.Remove(it.Key)) _open.Add(it.Key); Rebuild(); },
+                    menu: () => PriceMenu.For(this, _store, it.Name, Rebuild)));
                 if (_open.Contains(it.Key)) Emit(() => Details(it));
             }
         }

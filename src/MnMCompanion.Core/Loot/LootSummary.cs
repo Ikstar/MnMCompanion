@@ -208,36 +208,62 @@ public static class LootSummary
         _ => $"{Coin(e.Copper)}  from {e.Source}{(e.Shared ? (e.Split > 0 ? $"  (split; your share {Coin(e.Split)})" : "  (split)") : "")}",
     };
 
+    private static string FormatPrice(string item, ItemValue v, long total, ItemValues? values)
+    {
+        if (v.Scrap)
+        {
+            var yields = values?.ScrapOf(item);
+            var label = yields is { Count: > 0 } ? $"scrap → {ScrapItems.DescribeYields(yields)}" : "scrap";
+            if (!v.Known) return $"{label} (no known price)";
+            var scrapMark = v.Estimated ? "~" : "";
+            return $"{scrapMark}{Coin(v.Each)} each ({label})  ·  {scrapMark}{Coin(total)}";
+        }
+        if (!v.Known) return "no known price";
+        var mark = v.Estimated ? "~" : "";
+        return v.Custom
+            ? $"{Coin(v.Each)} each (custom)  ·  {Coin(total)}"
+            : $"{mark}{Coin(v.Each)} each  ·  {mark}{Coin(total)}";
+    }
+
     /// <summary>One item as a single line for the clipboard: "Rusty Iron Mace ×3  ·  looted by 2 people (Fenwick 2, Aldric)  ·  ~1sp each  ·  ~3sp".</summary>
-    public static string ItemLine(ItemWorth i)
+    public static string ItemLine(ItemWorth i, ItemValues? values = null)
     {
         var who = string.Join(", ", i.By.Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who));
-        var mark = i.Value.Estimated ? "~" : "";
-        var price = !i.Value.Known ? "no known price"
-            : i.Value.Custom ? $"{Coin(i.Value.Each)} each (custom)  ·  {Coin(i.Total)}"
-            : $"{mark}{Coin(i.Value.Each)} each  ·  {mark}{Coin(i.Total)}";
+        var price = FormatPrice(i.Item, i.Value, i.Total, values);
         var people = i.By.Count == 1 ? "1 person" : $"{i.By.Count} people";
         return $"{i.Item}{(i.Count > 1 ? $" ×{i.Count}" : "")}  ·  looted by {people}{(who.Length > 0 ? $" ({who})" : "")}  ·  {price}";
     }
 
-    /// <summary>The items tab as text: a heading, then <see cref="ItemLine"/> for every kind.</summary>
-    public static string ItemsText(DateOnly day, IReadOnlyList<ItemWorth> items, string scope = "")
+    /// <summary>The items tab as text: a heading, then <see cref="ItemLine"/> for every kind (plus expected scrap yields when any are scrapped).</summary>
+    public static string ItemsText(DateOnly day, IReadOnlyList<ItemWorth> items, string scope = "", ItemValues? values = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine("LOOT ITEMS  " + day.ToString("ddd d MMM yyyy", CultureInfo.InvariantCulture) + (scope.Length > 0 ? "  ·  " + scope : ""));
         if (items.Count == 0) { sb.AppendLine("No items looted."); return sb.ToString(); }
         sb.AppendLine($"{Plural(items.Count, "kind")}  ·  {items.Sum(i => i.Count):N0} taken");
-        foreach (var i in items) sb.AppendLine(ItemLine(i));
+        foreach (var i in items) sb.AppendLine(ItemLine(i, values));
+        if (values is not null)
+        {
+            var scrap = LootDay.ScrapYieldOf(items.Select(i => (i.Item, i.Count)), values);
+            if (scrap.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("SCRAP YIELD");
+                foreach (var m in scrap)
+                {
+                    var worth = m.Value.Known ? (m.Value.Estimated ? "~" : "") + Coin(m.Total) : "no known price";
+                    var from = string.Join(", ", m.From.Select(f => f.ItemCount > 1 ? $"{f.Item} ×{f.ItemCount}" : f.Item));
+                    sb.AppendLine($"{m.Material} ×{m.Count:N0}  ·  {worth}  ·  from {from}");
+                }
+            }
+        }
         return sb.ToString();
     }
 
     /// <summary>One item one player took, as a line: how many, their share of the group's, where from, and the price.</summary>
-    public static string MemberItemLine(MemberItem i)
+    public static string MemberItemLine(MemberItem i, ItemValues? values = null)
     {
-        var mark = i.Value.Estimated ? "~" : "";
-        var price = !i.Value.Known ? "no known price"
-            : i.Value.Custom ? $"{Coin(i.Value.Each)} each (custom)  ·  {Coin(i.Total)}"
-            : $"{mark}{Coin(i.Value.Each)} each  ·  {mark}{Coin(i.Total)}";
+        var price = FormatPrice(i.Item, i.Value, i.Total, values);
         return $"{i.Item}{(i.Count > 1 ? $" ×{i.Count}" : "")}  ·  {i.Count} of the group's {i.GroupCount}{(i.MostlyFrom.Length > 0 ? $"  ·  mostly from {i.MostlyFrom}" : "")}  ·  {price}";
     }
 
@@ -290,6 +316,16 @@ public static class LootSummary
                 i.Item, i.Count.ToString(),
                 string.Join(", ", i.By.Take(3).Select(b => b.Count > 1 ? $"{b.Who} {b.Count}" : b.Who)) + (i.By.Count > 3 ? $" +{i.By.Count - 3}" : ""),
             }).ToList(), [false, true, false]);
+
+        if (worth.ScrapMaterials.Count > 0)
+            Table(sb, "SCRAP YIELD", ["MATERIAL", "YIELD", "WORTH", "FROM"],
+                worth.ScrapMaterials.Select(m => new[]
+                {
+                    m.Material,
+                    m.Count.ToString("N0", CultureInfo.InvariantCulture),
+                    m.Value.Known ? (m.Value.Estimated ? "~" : "") + Coin(m.Total) : "-",
+                    string.Join(", ", m.From.Take(3).Select(f => f.ItemCount > 1 ? $"{f.Item} ×{f.ItemCount}" : f.Item)) + (m.From.Count > 3 ? $" +{m.From.Count - 3}" : ""),
+                }).ToList(), [false, true, true, false]);
 
         var mobs = Corpses(events).Where(c => c.Mob).GroupBy(c => c.Source, StringComparer.OrdinalIgnoreCase)
             .Select(g => (Name: g.Key, Count: g.Count(), Purses: g.Where(c => c.Copper > 0).ToList(), Items: g.Sum(c => c.Items)))

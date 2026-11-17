@@ -40,7 +40,10 @@ internal sealed class VendorsPage(HistoryFocus focus, HistoryData data, HistoryV
             "Price book" => Book(data.Book),
             _ => Log(rows),
         }, tab => [("Copy summary", () => Summary(t, rows))],
-        tab => tab == "Price book" ? [(Store.CustomPrices.Count > 0 ? $"Custom prices ({Store.CustomPrices.Count:N0})…" : "Custom prices…", "Set, change or clear custom item prices", () => CustomPricesWindow.Open(Window.GetWindow(this), Store))] : []);
+        tab => tab == "Price book" ? [
+            (Store.CustomPrices.Count > 0 ? $"Custom prices ({Store.CustomPrices.Count:N0})…" : "Custom prices…", "Set, change or clear custom item prices", () => CustomPricesWindow.Open(Window.GetWindow(this), Store)),
+            (Store.ScrapItems.Count > 0 ? $"Scrapped items ({Store.ScrapItems.Count:N0})…" : "Scrapped items…", "Set, edit or stop items marked to scrap instead of sell", () => CustomPricesWindow.Open(Window.GetWindow(this), Store, scrapTab: true)),
+        ] : []);
     }
 
     private FrameworkElement Items(List<VendorRow> rows, VendorDirection direction)
@@ -48,7 +51,7 @@ internal sealed class VendorsPage(HistoryFocus focus, HistoryData data, HistoryV
         var sold = direction == VendorDirection.Sold;
         return Table.Build(sold ? "vendor-sales" : "vendor-purchases", VendorSummary.ByItem(rows, direction), new Col<VendorItem>[]
         {
-            new("Item", 0, i => i.Item, i => i.Item, Right: false),
+            new("Item", 0, i => Store.ScrapItems.TryGet(i.Item, out _) ? $"{i.Item}  (scrap)" : i.Item, i => i.Item, Right: false),
             new("Stacks", 64, i => $"{i.Stacks:N0}", i => i.Stacks),
             new("Items", 64, i => $"{i.Units:N0}", i => i.Units),
             new(sold ? "Paid each" : "Cost each", 92, i => i.Each > 0 ? LootSummary.Coin(i.Each) : "—", i => i.Each, Tip: "The middle price for one"),
@@ -77,11 +80,18 @@ internal sealed class VendorsPage(HistoryFocus focus, HistoryData data, HistoryV
                 p => Store.CustomPrices.TryGet(p.Item, out var c) ? LootSummary.Coin(c) : "—",
                 p => Store.CustomPrices.TryGet(p.Item, out var c) ? c : -1L,
                 Tip: "Your custom price for one, used instead of Pays when valuing loot"));
+        if (Store.ScrapItems.Count > 0)
+            columns.Insert(Store.CustomPrices.Count > 0 ? 3 : 2, new Col<PriceEntry>("Scrap", 120,
+                p => Store.ScrapItems.TryGet(p.Item, out var sr)
+                    ? (Store.Values.Of(p.Item) is { Known: true } sv ? $"{(sv.Estimated ? "~" : "")}{LootSummary.Coin(sv.Each)}" : $"→ {ScrapItems.DescribeYields(sr.Yields)}")
+                    : "—",
+                p => Store.ScrapItems.TryGet(p.Item, out _) ? Store.Values.Of(p.Item).Each : -1L,
+                Tip: "Value from scrapping this item into materials instead of selling"));
         var table = Table.Build("vendor-book", shown, columns, Rebuild, defaultSort: 1, bar: p => p.Median, color: _ => Palette.Gold,
-        click: p => CustomPriceDialog.Open(Window.GetWindow(this), Store, p.Item),
+        click: p => PriceMenu.OpenDefault(Window.GetWindow(this), Store, p.Item),
         copy: p => $"{p.Item}: vendors pay {LootSummary.Coin(p.Median)}" + (p.Min != p.Max ? $" ({LootSummary.Coin(p.Min)} to {LootSummary.Coin(p.Max)})" : "") + $", {p.Samples:N0} sales",
         menu: p => PriceMenu.For(this, Store, p.Item));
-        return WithNote("Every price this PC has seen: all your characters, all time, not just the period above. Sell one of an item to learn its price, or click/right-click a row to set a custom price.", table);
+        return WithNote("Every price this PC has seen: all your characters, all time, not just the period above. Sell one of an item to learn its price, or click/right-click a row to set a custom price or scrap yield.", table);
     }
 
     private FrameworkElement Log(List<VendorRow> rows)

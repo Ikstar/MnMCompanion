@@ -38,7 +38,7 @@ internal sealed class PanelWindow : Window
     private readonly UpdateController? _updates;
     private readonly DispatcherTimer _timer;
     private bool _busy, _closing;
-    private long _customShown;
+    private long _customShown, _scrapShown;
     private readonly string? _recipesFile, _marketFile;
     private readonly Dictionary<string, PageWindow> _pageWindows = [];
 
@@ -170,17 +170,20 @@ internal sealed class PanelWindow : Window
         }
 
         _customShown = store.CustomPrices.Version;
-        void OnCustomPricesChanged() => Dispatcher.BeginInvoke(() =>
+        _scrapShown = store.ScrapItems.Version;
+        void OnOverridesChanged() => Dispatcher.BeginInvoke(() =>
         {
             if (_closing) return;
-            _store.SyncCustom();
-            if (_customShown == _store.CustomPrices.Version) return;
+            _store.SyncOverrides();
+            if (_customShown == _store.CustomPrices.Version && _scrapShown == _store.ScrapItems.Version) return;
             _customShown = _store.CustomPrices.Version;
+            _scrapShown = _store.ScrapItems.Version;
             _panel.Refresh();
             if (_page != "Loot") Active.Refresh();
             foreach (var window in _pageWindows.Values.ToList()) window.Refresh();
         });
-        store.CustomPrices.Changed += OnCustomPricesChanged;
+        store.CustomPrices.Changed += OnOverridesChanged;
+        store.ScrapItems.Changed += OnOverridesChanged;
 
         LocationChanged += (_, _) => Remember();
         SizeChanged += (_, _) => Remember();
@@ -189,7 +192,8 @@ internal sealed class PanelWindow : Window
             _closing = true;
             _timer?.Stop();
             _map.Dispose();
-            store.CustomPrices.Changed -= OnCustomPricesChanged;
+            store.CustomPrices.Changed -= OnOverridesChanged;
+            store.ScrapItems.Changed -= OnOverridesChanged;
             if (_updates is not null) _updates.Changed -= ShowBanner;
         };
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -400,6 +404,7 @@ internal sealed class PanelWindow : Window
             if (changed || force)
             {
                 _customShown = _store.CustomPrices.Version;
+                _scrapShown = _store.ScrapItems.Version;
                 _panel.Refresh();
                 if (_page != "Loot") Active.Refresh();
                 foreach (var window in _pageWindows.Values.ToList()) window.Refresh();
@@ -498,6 +503,15 @@ internal sealed class PanelWindow : Window
         };
         customPrices.Click += (_, _) => CustomPricesWindow.Open(this, _store);
         menu.Items.Add(customPrices);
+
+        int scrapCount = _store.ScrapItems.Count;
+        var scrapItems = new MenuItem
+        {
+            Header = scrapCount > 0 ? $"Scrapped items ({scrapCount:N0})…" : "Scrapped items…",
+            ToolTip = "Set items to scrap into crafting materials instead of selling to a vendor",
+        };
+        scrapItems.Click += (_, _) => CustomPricesWindow.Open(this, _store, scrapTab: true);
+        menu.Items.Add(scrapItems);
         menu.Items.Add(new Separator());
         var ledgerFolder = new MenuItem { Header = "Open the ledger folder", ToolTip = "Opens the folder where the game keeps this character's ledger files (one a day for the character, one for the party)." };
         ledgerFolder.Click += (_, _) => _panel.OpenFolder();
