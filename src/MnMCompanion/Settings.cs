@@ -22,7 +22,7 @@ public sealed class Settings
     public string View { get; set; } = "Value";
     public bool OnTop { get; set; } = true;
 
-    /// <summary>The page the small window was left on: Map, Loot, Vendor, Trades, Items, Harvest, Recipes or Market.</summary>
+    /// <summary>The page the small window was left on: Map, Loot, Vendor, Trades, Items, Harvest, Recipes, Market or Gear.</summary>
     public string MiniPage { get; set; } = "Loot";
 
     /// <summary>

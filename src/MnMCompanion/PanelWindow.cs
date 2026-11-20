@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shell;
 using System.Windows.Threading;
+using MnMCompanion.Gear;
 using MnMCompanion.Ledger;
 using MnMCompanion.Loot;
 
@@ -23,14 +24,17 @@ internal sealed class PanelWindow : Window
     private readonly MapPanel _map;
     private readonly RecipesPanel _recipes;
     private readonly MarketPanel _market;
+    private readonly GearStore _gear;
+    private readonly GearPanel _gearPanel;
     private readonly SessionScope _session;
     private readonly HistoryData? _history;
     private readonly Dictionary<string, IMiniPage> _pages = [];
     private readonly Dictionary<string, RadioButton> _nav = [];
+    private UniformGrid? _navGrid;
     private readonly ContentControl _host = new();
     private readonly TextBlock _status;
     private string _page = "Loot";
-    private static readonly string[] PageNames = ["Map", "Loot", "Vendor", "Trades", "Items", "Harvest", "Recipes", "Market"];
+    private static readonly string[] PageNames = ["Map", "Loot", "Vendor", "Trades", "Items", "Harvest", "Recipes", "Market", "Gear"];
     private readonly TextBlock _who;
     private readonly Button _pin;
     private readonly Button _about;
@@ -39,7 +43,7 @@ internal sealed class PanelWindow : Window
     private readonly DispatcherTimer _timer;
     private bool _busy, _closing;
     private long _customShown, _scrapShown;
-    private readonly string? _recipesFile, _marketFile;
+    private readonly string? _recipesFile, _marketFile, _gearFile;
     private readonly Dictionary<string, PageWindow> _pageWindows = [];
 
     public event Action<DateOnly, string?, LootSession?>? BreakdownRequested;
@@ -60,7 +64,8 @@ internal sealed class PanelWindow : Window
     /// <param name="updates">The update checker; null (a picture-taking run) means no update button or banner.</param>
     /// <param name="recipesFile">A recipe list to read instead of the kept copy and the wiki (a picture-taking run); null for the real thing.</param>
     /// <param name="marketFile">An auction feed to read instead of the kept book and mnm-db.com (a picture-taking run); null for the real thing.</param>
-    public PanelWindow(LootStore store, Settings settings, UpdateController? updates = null, HistoryData? history = null, string? recipesFile = null, string? marketFile = null)
+    /// <param name="gearFile">A gear JSON or screenshot image to read instead of the kept gear file (a picture-taking run); null for the real thing.</param>
+    public PanelWindow(LootStore store, Settings settings, UpdateController? updates = null, HistoryData? history = null, string? recipesFile = null, string? marketFile = null, string? gearFile = null)
     {
         _store = store;
         _settings = settings;
@@ -68,6 +73,8 @@ internal sealed class PanelWindow : Window
         _history = history;
         _recipesFile = recipesFile;
         _marketFile = marketFile;
+        _gearFile = gearFile;
+        _gear = new GearStore(store.StateFolder ?? store.StateRoot);
         Title = "Companion";
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.CanResizeWithGrip;
@@ -143,6 +150,7 @@ internal sealed class PanelWindow : Window
         _pages["Harvest"] = new HarvestMini(store, history, _session, _status, OpenInHistory);
         _pages["Recipes"] = _recipes = new RecipesPanel(settings, _status, recipesFile);
         _pages["Market"] = _market = new MarketPanel(store, _session, settings, _status, marketFile);
+        _pages["Gear"] = _gearPanel = new GearPanel(store, _gear, settings, _status, FollowFromGear, gearFile);
         _session.Said += text =>
         {
             Active.Say(text);
@@ -159,7 +167,9 @@ internal sealed class PanelWindow : Window
         root.Children.Add(_host);
         Content = root;
         WindowScale.Attach(this, settings, "Panel", "small window", sizeIsSaved: settings.Panel is not null);
-        root.SizeChanged += (_, _) => ShowToolLabels();   // the contents' width, which a change of size alters without the window's width changing
+        LayoutNavGrid();
+        root.SizeChanged += (_, _) => { ShowToolLabels(); LayoutNavGrid(); };   // the contents' width, which a change of size alters without the window's width changing
+        PreviewKeyDown += OnPreviewKeyDown;
         ShowPage(PageNames.Contains(settings.MiniPage) ? settings.MiniPage : "Loot", save: false);
         ShowPin();
         ShowSelection();
@@ -192,6 +202,7 @@ internal sealed class PanelWindow : Window
             _closing = true;
             _timer?.Stop();
             _map.Dispose();
+            _gearPanel.Dispose();
             store.CustomPrices.Changed -= OnOverridesChanged;
             store.ScrapItems.Changed -= OnOverridesChanged;
             if (_updates is not null) _updates.Changed -= ShowBanner;
@@ -232,6 +243,9 @@ internal sealed class PanelWindow : Window
     /// <summary>For a picture: the Market page on a tab, with a search typed in.</summary>
     public void ShowMarket(string? tab, string? search) => _market.Show(tab, search);
 
+    /// <summary>For a picture: the Gear page on a tab.</summary>
+    public void ShowGear(string? tab) => _gearPanel.Show(tab);
+
     private void ShowPage(string key, bool save = true)
     {
         if (!_pages.TryGetValue(key, out var page)) return;
@@ -245,28 +259,30 @@ internal sealed class PanelWindow : Window
     }
 
     /// <summary>
-    /// The bottom of the window: a button for each page (Map, Loot, Vendor, Trades, Items, Harvest, Recipes, Market) with the status line above them. Every page shows
+    /// The bottom of the window: a button for each page (Map, Loot, Vendor, Trades, Items, Harvest, Recipes, Market, Gear) with the status line above them. Every page shows
     /// the same day and session; History is a button in the title bar, New session is in the session menu and the ledger folder in the ⓘ menu.
     /// </summary>
     private FrameworkElement BuildBottomBar()
     {
-        var grid = new System.Windows.Controls.Primitives.UniformGrid { Columns = PageNames.Length };
+        var grid = new UniformGrid { Columns = PageNames.Length };
+        _navGrid = grid;
         foreach (var name in PageNames)
         {
             var key = name;
-            var rb = new RadioButton { Content = new TextBlock { Text = key }, Style = (Style)Ui.Theme["Segment"], GroupName = "MiniPage", IsChecked = key == _page, Focusable = false };
+            var label = new TextBlock { Text = key, TextTrimming = TextTrimming.CharacterEllipsis, Padding = new Thickness(2, 0, 2, 0) };
+            var rb = new RadioButton { Content = label, Style = (Style)Ui.Theme["Segment"], GroupName = "MiniPage", IsChecked = key == _page, Focusable = false };
             rb.Checked += (_, _) => { if (key != _page) ShowPage(key); };
             rb.ToolTip = $"{key}. Right-click to open it in a window of its own.";
             var menu = new ContextMenu();
             var popOut = new MenuItem { Header = $"Open {key} in its own window", ToolTip = "A second copy of this page in a window you can move, resize and keep beside the game. It stays up to date with the small window." };
             popOut.Click += (_, _) => PopOut(key, compact: false);
             menu.Items.Add(popOut);
-            if (key is "Loot" or "Vendor" or "Items" or "Harvest")
+            if (key is "Loot" or "Vendor" or "Items" or "Harvest" or "Gear")
             {
                 var mini = new MenuItem
                 {
                     Header = $"Open {key} as a mini window",
-                    ToolTip = "A compact window with only the headline and top 3 rows.",
+                    ToolTip = key == "Gear" ? "A compact window with only the summary and top equipped slots." : "A compact window with only the headline and top 3 rows.",
                 };
                 mini.Click += (_, _) => PopOut(key, compact: true);
                 menu.Items.Add(mini);
@@ -322,6 +338,25 @@ internal sealed class PanelWindow : Window
         foreach (var label in _toolLabels) label.Visibility = visibility;
     }
 
+    private void LayoutNavGrid()
+    {
+        if (_navGrid is null) return;
+        double width = Content is FrameworkElement content && content.ActualWidth > 0 ? content.ActualWidth : Width;
+        _navGrid.Columns = width < 460 ? 5 : PageNames.Length;
+    }
+
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_page == "Gear" &&
+            Keyboard.Modifiers == ModifierKeys.Control &&
+            e.Key == Key.V &&
+            Keyboard.FocusedElement is not TextBoxBase)
+        {
+            _gearPanel.PasteFromClipboard();
+            e.Handled = true;
+        }
+    }
+
     /// <summary>Opens a page in a window of its own, or brings the one it already has forward.</summary>
     public PageWindow? PopOut(string key, bool quiet = false, bool? compact = null)
     {
@@ -371,7 +406,8 @@ internal sealed class PanelWindow : Window
             "Items" => new ItemsMini(_store, _history, _session, status, OpenInHistory),
             "Harvest" => new HarvestMini(_store, _history, _session, status, OpenInHistory),
             "Recipes" => new RecipesPanel(_settings, status, _recipesFile),
-            _ => new MarketPanel(_store, _session, _settings, status, _marketFile),
+            "Market" => new MarketPanel(_store, _session, _settings, status, _marketFile),
+            _ => new GearPanel(_store, _gear, _settings, status, FollowFromGear, _gearFile),
         };
         return (page, status);
     }
@@ -619,9 +655,23 @@ internal sealed class PanelWindow : Window
         _settings.Server = source.Server;
         _settings.Character = source.Character;
         _settings.Save();
+        _gear.PointTo(_store.StateFolder ?? _store.StateRoot);
         ShowSelection();
         _panel.Refresh();
         await RefreshAsync(force: true);
+    }
+
+    private void FollowFromGear(LedgerSource source)
+    {
+        _store.Select(source);
+        _session.Reset();
+        _settings.Server = source.Server;
+        _settings.Character = source.Character;
+        _settings.Save();
+        _gear.PointTo(_store.StateFolder ?? _store.StateRoot);
+        ShowSelection();
+        _panel.Refresh();
+        _ = RefreshAsync(force: true);
     }
 
     private async Task ChooseRoot()
@@ -634,6 +684,7 @@ internal sealed class PanelWindow : Window
         if (_store.Sources.Count > 0) await Follow(_store.Sources.FirstOrDefault(s => s.HasLedger) ?? _store.Sources[0]);
         else
         {
+            _gear.PointTo(_store.StateFolder ?? _store.StateRoot);
             ShowSelection();
             _panel.Refresh();
         }

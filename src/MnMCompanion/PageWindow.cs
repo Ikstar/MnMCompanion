@@ -14,7 +14,7 @@ using MnMCompanion.Loot;
 namespace MnMCompanion;
 
 /// <summary>
-/// One page of the small window (Map, Loot, Vendor, Trades, Items, Harvest, Recipes or Market) in a window of its own, the way History is: moved and resized
+/// One page of the small window (Map, Loot, Vendor, Trades, Items, Harvest, Recipes, Market or Gear) in a window of its own, the way History is: moved and resized
 /// wherever the player likes, kept on top of the game or not, drawn at its own size (Ctrl + wheel), and on supported pages switched to a compact mini view.
 /// It is a second copy of the page, looking at the same ledger, history and session, and the small window keeps it up to date (<see cref="Refresh"/>,
 /// <see cref="Tick"/>), so it shows the same thing as the page does there. Where it sits, whether it was open, and whether it is in mini view are remembered
@@ -220,6 +220,17 @@ internal sealed class PageWindow : Window
         {
             page.Refresh();
             if (_compact && !_settings.PageWindowsCompactHeight.ContainsKey(Key)) QueueAutoFit();
+        };
+        PreviewKeyDown += (_, e) =>
+        {
+            if (page is GearPanel gearPage &&
+                Keyboard.Modifiers == ModifierKeys.Control &&
+                e.Key == System.Windows.Input.Key.V &&
+                Keyboard.FocusedElement is not TextBoxBase)
+            {
+                gearPage.PasteFromClipboard();
+                e.Handled = true;
+            }
         };
     }
 

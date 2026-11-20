@@ -63,6 +63,7 @@ them and turns them into something you can look at:
 - **A map of the zone you're in**, from the community atlas, which follows you from zone to zone (see [The Map page](#the-map-page)).
 - **Every tradeskill recipe of the community wiki**, by skill and by level, with a search box (see [The Recipes page](#the-recipes-page)).
 - **What players ask for items on the auction channel**, from mnm-db.com's feed, with what your own loot would fetch (see [The Market page](#the-market-page)).
+- **Your character's equipped gear and Persona stats**, read from a screenshot of your Inventory window and kept per character (see [The Gear page](#the-gear-page)).
 - **Timers** you start with a key, and one on every corpse, all switched off until you turn them on (see [Timers](#timers)).
 - **A yes/no choice to add your own numbers to a combined community database** of drop rates and prices (kept privately by the project), and to use it (see [Sharing](#sharing-with-the-community-data)).
 - **A copy button** that turns any of it into text you can paste into chat.
@@ -128,7 +129,7 @@ Under the title bar you'll see the **day** you're looking at (use the arrows to 
 of everything looted, and a smaller line breaking it into **coin** and **items**. Next to the day is a menu that says **Whole day** or
 **This session**; see [Sessions](#sessions-starting-a-fresh-tally).
 
-### The bottom bar: seven pages
+### The bottom bar: nine pages
 
 The bottom of the window has a button for each **page**.
 
@@ -149,8 +150,9 @@ The bottom of the window has a button for each **page**.
 | **Harvest** | What you gathered, how many an hour, and roughly what it's worth. Tabs: Items, Log. |
 | **Recipes** | Every tradeskill recipe of the community wiki, by skill and by level, with a search box. See [The Recipes page](#the-recipes-page). It isn't about your day, so it ignores the session. |
 | **Market** | What players ask for items on the auction channel, from mnm-db.com's feed: what is for sale, what people are bidding for, and what your loot this session would fetch. See [The Market page](#the-market-page). |
+| **Gear** | Your 21 equipped equipment slots and Persona summary, read from an Inventory screenshot (`Ctrl+V`, drag-and-drop, or **Open…**) and kept per character. See [The Gear page](#the-gear-page). |
 
-**Every page except Recipes and Market shows the same day and the same session** (Market's *Yours* tab follows it too). Choose *This session* (or an earlier one, or the whole day) on one page and they all
+**Every page except Recipes, Market and Gear shows the same day and the same session** (Market's *Yours* tab follows it too). Choose *This session* (or an earlier one, or the whole day) on one page and they all
 follow, so "what did this one run give me?" is the same question on every page. A click on a row of Vendor, Trades, Items or Harvest opens that
 page of the History window for the same character.
 
@@ -273,6 +275,14 @@ It never asks twice within an hour, not even after an error, and keeps away for 
 *Load auction prices from mnm-db.com* in the ⓘ menu: the page then says loading is switched off, and offers to turn it on or to open the site in your
 browser instead. mnm-db.com is by the community (open source, MIT), can be incomplete, and Companion is not affiliated with it, with the stream or with
 the game's makers.
+
+### The Gear page
+
+The **Gear** page keeps a record of each character's 21 equipped paperdoll slots and Persona stats (`gear.json` in that character's Companion folder, never sent anywhere):
+
+- **Import from a screenshot**: Open your character's Inventory window in-game (with slot item names shown), take a screenshot or `Win+Shift+S` snip, and press **Paste** (`Ctrl+V`), drag-and-drop the image onto the page, or click **Open…** to pick an image file. Companion locates the paperdoll regardless of screen resolution or window position, reads each slot and Persona block locally using Windows OCR, and matches against your local item catalog (`market.json`, `recipes.json`, and your ledger).
+- **Enriched stats & worth**: Recognized items show cached `ItemCard` details (AC, damage/delay, stats, HP/Mana, weight) alongside market median or vendor/custom/scrap values.
+- **Edit any slot & copy**: Click any slot to set, correct, or clear it by hand with searchable suggestions from your local catalog, or press **Copy** to put a formatted summary of your loadout and Persona stats on the clipboard.
 
 ### Those little symbols after a number
 
